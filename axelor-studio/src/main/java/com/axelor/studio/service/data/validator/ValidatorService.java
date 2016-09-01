@@ -15,7 +15,7 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-package com.axelor.studio.service.data.importer;
+package com.axelor.studio.service.data.validator;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -37,16 +37,14 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import com.axelor.exception.AxelorException;
 import com.axelor.i18n.I18n;
-import com.axelor.meta.db.MetaMenu;
 import com.axelor.meta.db.MetaModel;
-import com.axelor.meta.db.repo.MetaMenuRepository;
 import com.axelor.meta.db.repo.MetaModelRepository;
 import com.axelor.studio.service.ConfigurationService;
-import com.axelor.studio.service.data.DataCommon;
+import com.axelor.studio.service.data.CommonService;
 import com.google.common.base.Strings;
 import com.google.inject.Inject;
 
-public class DataValidatorService {
+public class ValidatorService {
 	
 	private final static List<String> IGNORE_NAMES = new ArrayList<String>();
 	{	
@@ -63,11 +61,11 @@ public class DataValidatorService {
 		IGNORE_NAMES.add("dashlet");
 	}
 	
-	private static final String sumPattern = "sum\\(([^;^:]+;[^;^:]+(:[^:^;]+)?)\\)";
+	private static final String SUM_PATTERN = "sum\\(([^;^:]+;[^;^:]+(:[^:^;]+)?)\\)";
 	
-	private static final String seqPattern = "seq\\(([\\d]+(:[^:]+)?(:[^:]+)?)\\)";
+	private static final String SEQ_PATTERN = "seq\\(([\\d]+(:[^:]+)?(:[^:]+)?)\\)";
 	
-	private static final List<String> panelTabTypes = Arrays.asList(new String[]{"o2m","m2m","dashlet","paneltab"});
+	private static final List<String> PANELTAB_TYPES = Arrays.asList(new String[]{"o2m","m2m","dashlet","paneltab"});
 	
 	private File logFile;
 	
@@ -75,20 +73,19 @@ public class DataValidatorService {
 	
 	private Map<String, List<String>> modelMap;
 	
-	private Map<String, Object[]> viewPanelMap;
+	private Map<String, Object[]> panelMap;
+	
+	private Set<String> menubarSet;
 	
 	private Map<String, Row> invalidModelMap;
 	
 	private Map<String, String> referenceMap;
 	
+	private Set<String> addOnlyViews;
+	
 	private Map<String, Map<String, Row>> invalidFieldMap;
 	
-	private List<String> menus;
-	
 	private Row row;
-	
-	@Inject
-	private MetaMenuRepository metaMenuRepo;
 	
 	@Inject
 	private ConfigurationService configService;
@@ -97,22 +94,34 @@ public class DataValidatorService {
 	private MetaModelRepository metaModelRepo;
 	
 	@Inject
-	private DataCommon common;
+	private CommonService common;
+	
+	@Inject
+	private MenuValidator menuValidator;
 	
 	public File validate(XSSFWorkbook workBook) throws IOException {
 	
 		logFile = null;
 		modelMap = new HashMap<String, List<String>>();
-		viewPanelMap = new HashMap<String, Object[]>();
+		panelMap = new HashMap<String, Object[]>();
 		invalidModelMap = new HashMap<String, Row>();
 		invalidFieldMap = new HashMap<String, Map<String,Row>>();
 		referenceMap = new HashMap<String, String>();
-		menus = new ArrayList<String>();
+		menubarSet = new HashSet<String>();
+		addOnlyViews = new HashSet<String>();
+
 		Iterator<XSSFSheet> sheetIter = workBook.iterator();
-		validateModules(sheetIter.next());
 		
 		while (sheetIter.hasNext()) {
 			XSSFSheet sheet = sheetIter.next();
+			String name = sheet.getSheetName();
+			if (name.equals("Modules")) {
+				validateModules(sheet);
+				continue;
+			}
+			if (name.equals("Menu")) {
+				continue;
+			}
 			Iterator<Row> rowIter = sheet.rowIterator();
 			if (rowIter.hasNext()) {
 				rowIter.next();
@@ -121,6 +130,8 @@ public class DataValidatorService {
 		}
 		
 		checkInvalid();
+		
+		menuValidator.validate(this, workBook.getSheet("Menu"));
 		
 		if (logBook != null) {
 			logBook.write(new FileOutputStream(logFile));
@@ -140,20 +151,24 @@ public class DataValidatorService {
 				continue;
 			}
 			
-			String name = DataCommon.getValue(row, 0);
+			String name = CommonService.getValue(row, 0);
+			if (name == null) {
+				continue;
+			}
+			
 			try {
 				configService.validateModuleName(name);
 			} catch (AxelorException e) {
 				addLog(e.getMessage(), row);
 			}
 			
-			String depends = DataCommon.getValue(row, 1);
+			String depends = CommonService.getValue(row, 1);
 			if (depends != null && Arrays.asList(depends.split(",")).contains(name)) {
 				addLog(I18n.get("Module's depends must not contain its name"), row);
 			}
 			
-			String title = DataCommon.getValue(row, 2);
-			String version = DataCommon.getValue(row, 3);
+			String title = CommonService.getValue(row, 2);
+			String version = CommonService.getValue(row, 3);
 			if (title == null || version == null) {
 				addLog(I18n.get("Title or module version is empty"), row);
 			}
@@ -169,13 +184,18 @@ public class DataValidatorService {
 		
 		this.row = rowIter.next();
 		
-		String module = DataCommon.getValue(row, DataCommon.MODULE);
+		String module = CommonService.getValue(row, CommonService.MODULE);
 		if (module == null) {
 			validateRow(rowIter);
 			return;
 		}
 		
-		module = module.replace("*", "");
+		boolean addOnly = false;
+		if (module.startsWith("*")) {
+			module = module.replace("*", "");
+			addOnly = true;
+		}
+		
 		if (configService.getNonCustomizedModules().contains(module)) {
 			validateRow(rowIter);
 			return;
@@ -188,6 +208,9 @@ public class DataValidatorService {
 		}
 		
 		String model = getModel();
+		if (addOnly) {
+			addOnlyViews.add(model);
+		}
 		
 		if (validateField(model)) {
 			try {
@@ -202,7 +225,7 @@ public class DataValidatorService {
 	
 	private String getModel() throws IOException {
 		
-		String model = DataCommon.getValue(row, DataCommon.MODEL);
+		String model = CommonService.getValue(row, CommonService.MODEL);
 		
 		if (model == null) {
 			return null;
@@ -236,22 +259,19 @@ public class DataValidatorService {
 		
 		boolean modelRequired = false;
 		
-		String type = validateType();
+		String type = CommonService.getValue(row, CommonService.TYPE);
+		
 		if (type != null) {
-			if (DataCommon.IGNORE_TYPES.contains(type)) {
+			if (CommonService.IGNORE_TYPES.contains(type)) {
 				return modelRequired;
 			}
-			if(!type.startsWith("menu") && !type.startsWith("dashlet")) {
+			type = validateType(model, type);
+			if(!type.startsWith("dashlet")) {
 				modelRequired = true;
 			}
 		}
 		
 		modelRequired = validateName(type, model, modelRequired);
-		
-		if(type != null && type.startsWith("menu")){
-			return false;
-		}
-		
 		modelRequired = checkSelect(row, type, modelRequired);
 		modelRequired = checkFormula(modelRequired);
 		modelRequired = checkEvents(model, modelRequired);
@@ -266,21 +286,15 @@ public class DataValidatorService {
 	private boolean validateName(String type, String obj,
 			boolean consider) throws IOException {
 		
-		String name = DataCommon.getValue(row, DataCommon.NAME);
-		String title = DataCommon.getValue(row, DataCommon.TITLE);
+		String name = CommonService.getValue(row, CommonService.NAME);
+		String title = CommonService.getValue(row, CommonService.TITLE);
 		if (title == null) {
-			title = DataCommon.getValue(row, DataCommon.TITLE_FR);
+			title = CommonService.getValue(row, CommonService.TITLE_FR);
 		}
 		if (name == null) {
 			name = title;
 		}
 		if (name != null) {
-			if (type != null && type.startsWith("menu")) {
-				if (title == null) {
-					addLog(I18n.get("Title required for menu."));
-				}
-				menus.add(name);
-			}
 			name = common.getFieldName(name);
 		}
 		
@@ -302,7 +316,7 @@ public class DataValidatorService {
 		}
 		else if (type != null 
 				&& !IGNORE_NAMES.contains(type) 
-				&& !DataCommon.IGNORE_TYPES.contains(type)) {
+				&& !CommonService.IGNORE_TYPES.contains(type)) {
 			addLog(I18n.get("Name and title empty or name is invalid."));
 		}
 		
@@ -312,10 +326,10 @@ public class DataValidatorService {
 
 	private boolean checkSelect(Row row, String type, boolean consider) throws IOException {
 		
-		String select = DataCommon.getValue(row, DataCommon.SELECT);
+		String select = CommonService.getValue(row, CommonService.SELECT);
 		
 		if (select == null) {
-			select = DataCommon.getValue(row, DataCommon.SELECT_FR);
+			select = CommonService.getValue(row, CommonService.SELECT_FR);
 		}
 		
 		if (select != null
@@ -336,7 +350,7 @@ public class DataValidatorService {
 	}
 	
 	
-	private void addLog(String log, Row row) throws IOException {
+	public void addLog(String log, Row row) throws IOException {
 		
 		if (row == null) {
 			row = this.row;
@@ -396,15 +410,12 @@ public class DataValidatorService {
 		
 	}
 	
-	private String validateType() throws IOException {
+	private String validateType(String model, String type) throws IOException {
 		
-		String type = DataCommon.getValue(row, DataCommon.TYPE);
-		if(type == null){
-			return type;
-		}
 		type = type.trim();
-		
 		String reference = null;
+		type = type.split(",")[0];
+		
 		if (type.contains("(")) {
 			String[] ref = type.split("\\(");
 			if(ref.length > 1){
@@ -413,34 +424,24 @@ public class DataValidatorService {
 			type = ref[0];
 		}
 		
-		if (!DataCommon.FIELD_TYPES.containsKey(type) 
-				&& !DataCommon.FR_MAP.containsKey(type) 
-				&& !DataCommon.VIEW_ELEMENTS.containsKey(type)
-				&& !DataCommon.IGNORE_TYPES.contains(type)) {
+		if (!CommonService.FIELD_TYPES.containsKey(type) 
+				&& !CommonService.FR_MAP.containsKey(type) 
+				&& !CommonService.VIEW_ELEMENTS.containsKey(type)) {
 			addLog(I18n.get("Invalid type"));
 		}
 		
-		if (DataCommon.RELATIONAL_TYPES.containsKey(type) && !type.equals("file") || type.equals("wizard")) { 
+		if (CommonService.RELATIONAL_TYPES.containsKey(type) && !type.equals("file") || type.equals("wizard")) { 
 			if (reference == null) {
 				addLog(I18n.get("Reference is empty for type"));
 			}
-			else  if (!modelMap.containsKey(reference) 
-					&& !invalidModelMap.containsKey(reference)) {
+			else  if (!modelMap.containsKey(reference) && !invalidModelMap.containsKey(reference)) {
 				invalidModelMap.put(reference, row);
-				referenceMap.put(DataCommon.getValue(row, DataCommon.MODEL) + "(" + DataCommon.getValue(row, DataCommon.NAME) + ")" , reference);
-			}
-			
-		}
-		
-		if (type.equals("menu") && reference != null) {
-			MetaMenu menu = metaMenuRepo.all().filter("self.name = ?1" , reference).fetchOne();
-			if(!menus.contains(reference) && menu == null){
-				addLog(I18n.get("No parent menu defined"));
+				referenceMap.put(model + "(" + CommonService.getValue(row, CommonService.NAME) + ")" , reference);
 			}
 		}
 		
-		if(type != null && !DataCommon.IGNORE_TYPES.contains(type) && !type.equals("menu")) {
-			checkViewPanelType(type, reference);
+		if (!addOnlyViews.contains(model)) {
+			validateView(type, model, reference);
 		}
 		
 		return type;
@@ -448,8 +449,8 @@ public class DataValidatorService {
 	
 	private boolean checkEvents(String obj, boolean consider) throws IOException {
 		
-		String formula = DataCommon.getValue(row, DataCommon.FORMULA);
-		String event = DataCommon.getValue(row, DataCommon.EVENT);
+		String formula = CommonService.getValue(row, CommonService.FORMULA);
+		String event = CommonService.getValue(row, CommonService.EVENT);
 		
 		if (event == null) {
 			return consider;
@@ -505,59 +506,96 @@ public class DataValidatorService {
 			}
 		}
 		
-		for(Object[] panel : viewPanelMap.values()) {
-			if(panel[0].equals("panelbook")) {
-				addLog(I18n.get("Panelbook must follow by paneltab"));
+		for(Object[] panel : panelMap.values()) {
+			String type = (String) panel[0];
+			if(type.equals("panelbook")) {
+				addLog(I18n.get("Panelbook must follow by paneltab"), (Row) panel[1]);
+			}
+			if(panel.length == 2 && type.startsWith("panel")) {
+				addLog(I18n.get("Panel must contain items or sub panels"), (Row) panel[1]);
 			}
 		}
 		
 	}
 	
-	private void checkViewPanelType(String type, String reference) throws IOException{
+	private void validateView(String type, String model, String reference) throws IOException{
 		
-		String view = DataCommon.getValue(row, DataCommon.VIEW);
+		String view = CommonService.getValue(row, CommonService.VIEW);
 		if (view == null) {
-			view = DataCommon.getValue(row, DataCommon.MODEL);
+			view = model;
 		}
-		
 		if (view == null) {
 			return;
 		}
+		if (checkIsHeader(type, view, reference)) {
+			return;
+		}
 		
-		Object[] lastPanel = viewPanelMap.get(view);
-		if (lastPanel == null) {
+		Object[] panel = panelMap.get(view);
+		String panelLevel = CommonService.getValue(row, CommonService.PANEL_LEVEL);
+		
+		if (panel == null) {
+			if (type.equals("paneltab")) {
+				addLog(I18n.get("Paneltab not allowed without panelbook"));
+			}
 			if (type.startsWith("panel")) {
-				if (type.equals("paneltab")) {
-					addLog(I18n.get("Paneltab not allowed without panelbook"));
-				}
-				else {
-					viewPanelMap.put(view, new Object[]{type, row});
-				}
+				panelMap.put(view, new Object[]{type, row});
 			}
-			else if (type.equals("button") 
-					&& (reference != null && !reference.equals("toolbar")) 
-					|| !type.equals("button")) {
-				viewPanelMap.put(view, new Object[]{"main", row});
+			else {
+				panelMap.put(view, new Object[]{"panel", row, type});
 			}
 		}
-		else if (lastPanel[0].equals("panelbook") 
-				&& !panelTabTypes.contains(type)) {
-			addLog(I18n.get("Panelbook must follow by paneltab"));
+		else if (panel[0].equals("panelbook")) { 
+			if (!PANELTAB_TYPES.contains(type)) {
+				addLog(I18n.get("Panelbook must follow by paneltab"));
+			}
+			panelMap.put(view, new Object[]{type, row});
 		}
-//		else if (type.equals("paneltab") 
-//				&& !lastPanel[0].equals("panelbook")
-//				&& !panelTabTypes.contains(lastPanel[0])) {
-//			addLog(I18n.get("Paneltab not allowed without panelbook"));
-//		}
-		else if (type.startsWith("panel") || panelTabTypes.contains(type)) {
-			viewPanelMap.put(view, new Object[]{type, row});
+		else if (type.startsWith("panel")) {
+			if (((String) panel[0]).startsWith("panel") && panelLevel == null && panel.length == 2) {
+				addLog(I18n.get("Panel must contain items or sub panel"));
+			}
+			panelMap.put(view, new Object[]{type, row});
 		}
+		else if (PANELTAB_TYPES.contains(type)) {
+			panelMap.put(view, new Object[]{type, row});
+		}
+		else if (((String)panel[0]).startsWith("panel")) {
+			panelMap.put(view, new Object[]{panel[0], panel[1], type});
+		}
+	}
+	
+	private boolean checkIsHeader(String type, String view, String reference) throws IOException {
+		
+		if ("toolbar".equals(reference)) {
+			return true;
+		}
+		
+		if (type.equals("menubar")) {
+			menubarSet.add(view);
+			return true;
+		}
+		
+		if (menubarSet.contains(view)) {
+			if (type.equals("menubar.item")) {
+				menubarSet.remove(view);
+			}
+			else {
+				addLog("Menubar must follow by 'menubar.items'");
+			}
+		}
+		
+		if (type.equals("menubar.items")) {
+			return true;
+		}
+		
+		return false;
 		
 	}
 	
 	private boolean checkFormula(boolean consider) throws IOException{
 		
-		String formula = DataCommon.getValue(row, DataCommon.FORMULA);
+		String formula = CommonService.getValue(row, CommonService.FORMULA);
 		
 		if (formula == null) {
 			return consider;
@@ -567,16 +605,30 @@ public class DataValidatorService {
 		for(String expr : formula.split(",")) {
 			expr = expr.trim();
 			if(expr.startsWith("sum(") 
-					&& !expr.matches(sumPattern)){
+					&& !expr.matches(SUM_PATTERN)){
 				addLog(I18n.get("Invalid sum formula syntax"));
 			}
 			else if(expr.startsWith("seq(") 
-					&& !expr.matches(seqPattern)){
+					&& !expr.matches(SEQ_PATTERN)){
 				addLog(I18n.get("Invalid sequence formula syntax"));
 			}
 		}
 		
 		return consider;
+	}
+	
+	public boolean isValidModel(String name) {
+		
+		if (modelMap.containsKey(name)) {
+			return true;
+		}
+	
+		MetaModel model = metaModelRepo.findByName(name);
+		if (model != null) {
+			return true;
+		}
+		
+		return false;
 	}
 	
 }

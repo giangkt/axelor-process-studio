@@ -23,6 +23,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.poi.ss.usermodel.Row;
@@ -32,39 +34,35 @@ import org.slf4j.LoggerFactory;
 import com.axelor.exception.AxelorException;
 import com.axelor.i18n.I18n;
 import com.axelor.meta.db.MetaField;
-import com.axelor.meta.db.MetaMenu;
 import com.axelor.meta.db.MetaModel;
 import com.axelor.meta.db.MetaModule;
-import com.axelor.meta.db.MetaSequence;
-import com.axelor.meta.db.repo.MetaMenuRepository;
+import com.axelor.meta.db.MetaView;
 import com.axelor.meta.db.repo.MetaModelRepository;
-import com.axelor.meta.db.repo.MetaSequenceRepository;
+import com.axelor.meta.db.repo.MetaViewRepository;
 import com.axelor.studio.db.ActionBuilder;
-import com.axelor.studio.db.ActionBuilderLine;
-import com.axelor.studio.db.MenuBuilder;
 import com.axelor.studio.db.ViewBuilder;
 import com.axelor.studio.db.ViewItem;
 import com.axelor.studio.db.ViewPanel;
 import com.axelor.studio.db.repo.ActionBuilderRepository;
-import com.axelor.studio.db.repo.MenuBuilderRepository;
 import com.axelor.studio.db.repo.ViewBuilderRepository;
 import com.axelor.studio.db.repo.ViewItemRepository;
 import com.axelor.studio.db.repo.ViewPanelRepository;
 import com.axelor.studio.service.ConfigurationService;
-import com.axelor.studio.service.FilterService;
 import com.axelor.studio.service.ViewLoaderService;
 import com.axelor.studio.service.builder.FormBuilderService;
-import com.axelor.studio.service.data.DataCommon;
-import com.axelor.studio.service.data.DataTranslationService;
+import com.axelor.studio.service.data.CommonService;
+import com.axelor.studio.service.data.TranslationService;
 import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
 import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
 
-public class DataViewService extends DataCommon {
+public class ImportForm extends CommonService {
 
 	private final static Logger log = LoggerFactory
-			.getLogger(DataViewService.class);
+			.getLogger(ImportForm.class);
+	
+	private final static Pattern DOMAIN_PATTERN = Pattern.compile("(:[\\w\\d\\.]+)");
 	
 	private Map<String, ViewBuilder> clearedViews = new HashMap<String, ViewBuilder>();
 
@@ -73,10 +71,6 @@ public class DataViewService extends DataCommon {
 	private Map<Long, Integer> viewSeqMap = new HashMap<Long, Integer>();
 
 	private Map<Long, Map<String, String>> eventMap = new HashMap<Long, Map<String, String>>();
-
-	private Integer parentMenuSeq = 0;
-
-	private Map<Long, Integer> menuSeqMap = new HashMap<Long, Integer>();
 
 	private Map<String, List<ActionBuilder>> viewActionMap = new HashMap<String, List<ActionBuilder>>();
 	
@@ -93,18 +87,6 @@ public class DataViewService extends DataCommon {
 	private ActionBuilderRepository actionBuilderRepo;
 
 	@Inject
-	private MenuBuilderRepository menuBuilderRepo;
-
-	@Inject
-	private FilterService filterService;
-	
-	@Inject
-	private MetaSequenceRepository metaSequenceRepo;
-	
-	@Inject
-	private MetaMenuRepository metaMenuRepo;
-	
-	@Inject
 	private ConfigurationService configService;
 	
 	@Inject
@@ -120,41 +102,46 @@ public class DataViewService extends DataCommon {
 	private ViewBuilderRepository viewBuilderRepo;
 	
 	@Inject
-	private DataTranslationService translationService;
+	private TranslationService translationService;
+	
+	@Inject
+	private ImportFormula importFormula;
+	
+	@Inject
+	private MetaViewRepository metaViewRepo;
 	
 	public void clear() {
 		clearedViews = new HashMap<String, ViewBuilder>();
 		panelSeqMap = new HashMap<Long, Integer>();
 		viewSeqMap = new HashMap<Long, Integer>();
-		menuSeqMap = new HashMap<Long, Integer>();
 		viewActionMap = new HashMap<String, List<ActionBuilder>>();
 		extendViews= new HashMap<String,  Set<String>>();
-		parentMenuSeq = 0;
 	}
 
-	public void addViewElement(MetaModel model, String[] basic, Row row,
-			MetaField metaField, boolean replace, Map<String, String> modulePriority) throws AxelorException {
-		
-		this.row = row;
+	public void importForm(MetaModel model, String[] basic, Row row,
+			MetaField metaField, boolean replace) throws AxelorException {
 		
 		String module = getValue(row, MODULE);
-		module = module.replace("*", "");
-		MetaModule metaModule = configService.getCustomizedModule(module);
-		
-		if (basic[0].equals("menu")) {
-			addMenu(model, basic, metaModule);
+		if (model == null || module == null){
 			return;
 		}
 		
-		if (model == null) {
-			throw new AxelorException(I18n.get("No object defind for row : %s sheet: %s"),
-					1, row.getRowNum() + 1, row.getSheet().getSheetName());
+		module = module.replace("*", "");
+		MetaModule metaModule = configService.getCustomizedModule(module);
+		if (metaModule == null) {
+			return;
 		}
 		
+		this.row = row;
+
 		String[] name = getViewName(model.getName());
+		if (name.length > 1) {
+			model = updateModelTitle(model, name[1]);
+		}
+		
 		checkReplace(replace, module, name[0]);
 		
-		ViewBuilder viewBuilder = getViewBuilder(metaModule, model, name, modulePriority);
+		ViewBuilder viewBuilder = getViewBuilder(metaModule, model, name);
 		
 		String panelLevel = getValue(row, PANEL_LEVEL);
 		
@@ -210,14 +197,25 @@ public class DataViewService extends DataCommon {
 			case "menubar.item":
 				addMenubarItem(viewBuilder);
 				break;
+			case "dashlet":
+				addDashlet(viewBuilder, basic);
+				break;
 			default:
 				addField(viewBuilder, metaField, basic);
 		}
 
 		processViewAction(viewBuilder);
 	}
+	
+	@Transactional
+	public MetaModel updateModelTitle(MetaModel model, String title) {
+		
+		model.setTitle(title);
 
-	private ViewBuilder getViewBuilder(MetaModule module, MetaModel model, String[] name, Map<String, String> priority) throws AxelorException {
+		return metaModelRepo.save(model);
+	}
+
+	private ViewBuilder getViewBuilder(MetaModule module, MetaModel model, String[] name) throws AxelorException {
 		
 		if (clearedViews.containsKey(name[0])) {
 			return clearedViews.get(name[0]);
@@ -227,18 +225,12 @@ public class DataViewService extends DataCommon {
 		if (viewBuilder == null) {
 			viewBuilder = viewLoaderService.getViewBuilderForm(module.getName(), model, name[0], name[1], !replace);
 		}
-
-		log.debug("Module priority: {}, module: {}", priority, module.getName());
-//		String depends = priority.get(module.getName());
-//		if (depends == null) {
-//			depends = module.getDepends();
-//		}
-//		if (depends != null) {
-//			viewBuilder = viewLoaderService.addParentView(viewBuilder, depends, name[0]);
-//		}
-
+		else if (name[1] != null) {
+			viewBuilder.setTitle(name[1]);
+		}
+		
 		viewBuilder = clearView(viewBuilder);
-
+		
 		return viewBuilder;
 	}
 	
@@ -250,6 +242,11 @@ public class DataViewService extends DataCommon {
 			String[] view = viewName.split("\\(");
 			viewName = view[0];
 			title = view[1].replace(")", "");
+			if (title.contains(",")) {
+				String[] titles = title.split(",");
+				title = titles[0];
+				translationService.addTranslation(title, titles[1], "fr");
+			}
 		}
 		
 		if (viewName == null) {
@@ -321,22 +318,28 @@ public class DataViewService extends DataCommon {
 		}
 		
 		panel.setNewPanel(!replace);
-		panel.setIfModule(getValue(row, IF_MODULE));
 		
 		if (addAttrs) {
+			
+			panel.setIfModule(getValue(row, IF_MODULE));
+			
 			panel.setColspan(getValue(row, COLSPAN));
 			
 			String readonly = getValue(row, READONLY);
 			if (readonly != null && readonly.equalsIgnoreCase("x")) {
 				panel.setReadonly(true);
 			}
-			panel.setReadonlyIf(getValue(row, READONLY_IF));
-			
+			else {
+				panel.setReadonlyIf(readonly);
+			}
+				
 			String hidden = getValue(row, HIDDEN);
 			if (hidden != null && hidden.equalsIgnoreCase("x")) {
 				panel.setHidden(true);
 			}
-			panel.setHideIf(getValue(row, HIDE_IF));
+			else {
+				panel.setHideIf(hidden);
+			}
 			
 			panel.setShowIf(getValue(row, SHOW_IF));
 			
@@ -408,8 +411,11 @@ public class DataViewService extends DataCommon {
 			viewItem.setViewPanel(lastPanel);
 		}
 		
-		viewItem.setOnClick(getValue(row, ON_CLICK));
-		setAttributes(viewBuilder, viewItem);
+		
+		viewItem.setOnClick(FormBuilderService.getUpdatedAction(
+				viewItem.getOnClick(), getValue(row, ON_CHANGE)));
+		
+		viewItem = setCommonAttributes(viewBuilder, viewItem);
 
 		viewItemRepo.save(viewItem);
 	}
@@ -431,11 +437,52 @@ public class DataViewService extends DataCommon {
 		viewItem.setTitle(basic[3]);
 		translationService.addTranslation(basic[3], getValue(row, TITLE_FR), "fr");
 		
-		setAttributes(viewBuilder, viewItem);
+		viewItem = setCommonAttributes(viewBuilder, viewItem);
 
 		viewItemRepo.save(viewItem);
 	}
+	
+	@Transactional
+	public ActionBuilder getActionViewBuilder(String name, String title, String viewName, ViewBuilder targetView, MetaModule module, MetaView metaView) {
+		
+		ActionBuilder builder = null;
+		if (module != null) {
+			builder = actionBuilderRepo.all()
+					.filter("self.name = ?1 and self.metaModule.name = ?2", name, module.getName())
+					.fetchOne();
+		}
+		
+		if (builder == null) {
+			builder = new ActionBuilder(name);
+			builder.setMetaModule(module);
+		}
 
+		builder.setEdited(true);
+		builder.setTitle(title);
+		builder.setTypeSelect(2);
+		builder.setViewBuilder(targetView);
+		
+		if (targetView != null) {
+			builder.setViewBuilder(targetView);
+			builder.setMetaModel(targetView.getMetaModel());
+			actionBuilderRepo.save(builder);
+		}
+		else if (metaView != null) {
+			builder.setMetaView(metaView);
+			String model = metaView.getModel();
+			if (model != null) {
+				builder.setMetaModel(metaModelRepo.all().filter("self.fullName = ?1", model).fetchOne());
+			}
+			actionBuilderRepo.save(builder);
+		}
+		else {
+			updateViewActionMap(builder, viewName);
+		}
+		
+		return builder;
+		
+	}
+	
 	@Transactional
 	public void addWizard(String module, ViewBuilder viewBuilder, String[] basic) throws AxelorException {
 
@@ -447,27 +494,17 @@ public class DataViewService extends DataCommon {
 		if (metaModel != null) {
 			targetView = viewLoaderService.getDefaultForm(module, metaModel, null, !replace);
 		}
-
+		
+		String viewName = basic[5];
+		if (viewName == null) {
+			viewName = ViewLoaderService.getDefaultViewName(modelName, "form");
+		}
+		
 		String actionName = "action-" + inflector.dasherize(basic[2]);
-
-		ActionBuilder builder = actionBuilderRepo.all()
-				.filter("self.name  = ?1 and self.metaModule.name = ?2", actionName, viewBuilder.getMetaModule().getName())
-				.fetchOne();
-		if (builder == null) {
-			builder = new ActionBuilder(actionName);
-			builder.setMetaModule(viewBuilder.getMetaModule());
-		}
-		builder.setEdited(true);
-		builder.setTypeSelect(2);
-		builder.setMetaModel(metaModel);
-		builder.setViewBuilder(targetView);
+		
+		ActionBuilder builder = getActionViewBuilder(actionName, basic[3], viewName, targetView, viewBuilder.getMetaModule(), null);
+		builder.setMetaModule(viewBuilder.getMetaModule());
 		builder.setPopup(true);
-
-		if (targetView == null) {
-			updateViewActionMap(builder, basic[1]);
-		} else {
-			actionBuilderRepo.save(builder);
-		}
 
 		ViewItem button = new ViewItem(basic[2]);
 		button.setTypeSelect(1);
@@ -477,7 +514,7 @@ public class DataViewService extends DataCommon {
 		button.setViewPanel(lastPanel);
 		button.setSequence(getPanelSeq(lastPanel.getId()));
 		button = setEvent(viewBuilder, button);
-		setAttributes(viewBuilder, button);
+		button = setCommonAttributes(viewBuilder, button);
 
 		viewItemRepo.save(button);
 	}
@@ -496,8 +533,9 @@ public class DataViewService extends DataCommon {
 			}
 			viewItem.setMetaField(metaField);
 		}
-		else {
+		else if(!basic[0].equals("empty")) {
 			translationService.addTranslation(basic[3], getValue(row, TITLE_FR), "fr");
+			viewItem = setDummyField(viewItem, basic);
 		}
 		
 		if (basic[4] != null) {
@@ -508,22 +546,37 @@ public class DataViewService extends DataCommon {
 			viewItem.setSequence(getPanelSeq(lastPanel.getId()));
 		}
 		
-		
-		viewItem = setEvent(viewBuilder, viewItem);
-		
-		setAttributes(viewBuilder, viewItem);
 		if (basic[0].equals("html")) {
 			viewItem.setWidget("html");
 		}
 		
-		viewItem.setOnChange(getValue(row, ON_CHANGE));
+		viewItem = setEvent(viewBuilder, viewItem);
+		viewItem = setCommonAttributes(viewBuilder, viewItem);
+		viewItem.setOnChange(FormBuilderService.getUpdatedAction(
+				viewItem.getOnChange(),  getValue(row, ON_CHANGE)));
 		viewItem.setPanelLevel(getValue(row, PANEL_LEVEL));
+		viewItem.setFormView(basic[5]);
+		viewItem.setGridView(basic[6]);
 		
 		viewItemRepo.save(viewItem);
 
 	}
 	
-	private void setNestedField(ViewPanel lastPanel, String parentField, 
+	private ViewItem setDummyField(ViewItem viewItem, String[] basic) {
+		
+		viewItem.setTitle(basic[3]);
+		viewItem.setFieldType(FIELD_TYPES.get(basic[0]));
+		if (basic[1] != null) {
+			MetaModel model = metaModelRepo.findByName(basic[1]);
+			if (model != null) {
+				viewItem.setTarget(model.getFullName());
+			}
+		}
+		
+		return viewItem;
+	}
+	
+	private ViewItem setNestedField(ViewPanel lastPanel, String parentField, 
 			ViewItem viewItem) throws AxelorException {
 		
 		log.debug("Last panel: {}", lastPanel);
@@ -540,65 +593,12 @@ public class DataViewService extends DataCommon {
 		Long sequence = viewItemRepo.all().filter("self.nestedField = ?1", relationalField).count();
 		viewItem.setSequence(sequence.intValue());
 		
-	}
-	
-
-	@Transactional
-	public void addMenu(MetaModel model, String[] basic, MetaModule module) throws AxelorException {
+		return viewItem;
 		
-		String name = inflector.dasherize(basic[2]);
-
-		MenuBuilder menuBuilder = menuBuilderRepo
-				.all()
-				.filter("self.name = ?1 and self.metaModule.name = ?2" , name, module.getName()).fetchOne();
-		if (menuBuilder == null) {
-			menuBuilder = new MenuBuilder(name);
-			menuBuilder.setMetaModule(module);
-		}
-		menuBuilder.setTitle(basic[3]);
-		
-		translationService.addTranslation(basic[3], getValue(row, TITLE_FR), "fr");
-		
-		if (model != null) {
-			menuBuilder.setMetaModel(model);
-			menuBuilder.setModel(model.getFullName());
-			menuBuilder.setIsParent(false);
-		} else {
-			menuBuilder.setIsParent(true);
-		}
-
-		MenuBuilder parent = null;
-		if (!Strings.isNullOrEmpty(basic[1])) {
-			String parentName = inflector.dasherize(basic[1]);
-			parent = menuBuilderRepo
-					.all()
-					.filter("self.name = ?1 and self.metaModule.name = ?2" , parentName, module.getName()).fetchOne();
-			if (parent != null) {
-				menuBuilder.setParent(parent.getName());
-				menuBuilder.setMenuBuilder(parent);
-			} else {
-				MetaMenu parentMenu = metaMenuRepo.findByName(parentName);
-				if (parentMenu != null) {
-					menuBuilder.setParent(parentMenu.getName());
-					menuBuilder.setMetaMenu(parentMenu);
-				}
-				else {
-					throw new AxelorException(I18n.get("No parent menu found %s for menu %s"),
-						1, parentName, basic[3]);
-				}
-			}
-		}
-
-		menuBuilder.setEdited(true);
-		menuBuilder.setOrder(getMenuOrder(parent));
-
-		menuBuilderRepo.save(menuBuilder);
-
 	}
 
-	private void updateViewActionMap(ActionBuilder builder, String model) {
-
-		String viewName = ViewLoaderService.getDefaultViewName(model, "form");
+	private void updateViewActionMap(ActionBuilder builder, String viewName) {
+		
 		log.debug("Updating view action map view: {} action: {}", viewName,
 				builder.getName());
 
@@ -621,30 +621,13 @@ public class DataViewService extends DataCommon {
 			for (ActionBuilder builder : builders) {
 				builder.setViewBuilder(viewBuilder);
 				builder.setMetaModel(viewBuilder.getMetaModel());
+				builder.setMetaModule(viewBuilder.getMetaModule());
 				actionBuilderRepo.save(builder);
 			}
 
 			viewActionMap.remove(viewBuilder.getName());
 
 		}
-	}
-
-	private int getMenuOrder(MenuBuilder parent) {
-
-		Integer seq = 0;
-		if (parent == null) {
-			seq = parentMenuSeq;
-			parentMenuSeq++;
-		} else {
-			Long menuId = parent.getId();
-			if (menuSeqMap.containsKey(menuId)) {
-				seq = menuSeqMap.get(menuId);
-			}
-			menuSeqMap.put(menuId, seq + 1);
-		}
-
-		return seq;
-
 	}
 
 	@Transactional
@@ -698,103 +681,6 @@ public class DataViewService extends DataCommon {
 		return seq;
 	}
 
-	@Transactional
-	public void createValidation(String type, ViewBuilder viewBuilder,
-			MetaModel model) {
-
-		String formula = getValue(row, FORMULA);
-		String event = getValue(row, EVENT);
-
-		if (Strings.isNullOrEmpty(formula) || Strings.isNullOrEmpty(event)) {
-			return;
-		}
-
-		String name = "action-" + viewBuilder.getName() + "-" + type;
-
-		ActionBuilder action = actionBuilderRepo
-				.all()
-				.filter("self.name = ?1 and self.metaModule.name = ?2", name, viewBuilder.getMetaModule().getName())
-				.fetchOne();
-		if (action == null) {
-			action = new ActionBuilder(name);
-			action.setMetaModule(viewBuilder.getMetaModule());
-		} else {
-			action.clearLines();
-		}
-
-		action.setMetaModel(model);
-		action.setTypeSelect(5);
-		action.setEdited(true);
-		
-		String[] items = formula.split(",");
-		ActionBuilderLine line = new ActionBuilderLine();
-		List<String> conditions = new ArrayList<String>();
-		for (int i = 0; i < items.length; i++) {
-			if (i % 2 == 0) {
-				String condition = null;
-				if (items[i].equals("else")) {
-					condition = "!(" + Joiner.on(" && ").join(conditions) + ")";
-				} else {
-					condition = filterService.getTagValue(items[i], false);
-					conditions.add(condition);
-				}
-				line.setConditionText(condition);
-			} else {
-				line.setValidationTypeSelect(type);
-				line.setValidationMsg(items[i]);
-				action.addLine(line);
-				line = new ActionBuilderLine();
-			}
-		}
-
-		if (action.getLines() != null && !action.getLines().isEmpty()) {
-			actionBuilderRepo.save(action);
-		}
-
-		addEvents(viewBuilder, event, name);
-
-	}
-
-	private void addEvents(ViewBuilder viewBuilder, String events, String action) {
-
-		for (String event : events.split(",")) {
-
-			if (event.equals("new")) {
-				continue;
-			}
-			if (event.equals("save")) {
-				String onSave = viewBuilder.getOnSave();
-				viewBuilder.setOnSave(FormBuilderService.getUpdatedAction(
-						onSave, action));
-			} else {
-				ViewItem viewItem = viewItemRepo
-						.all()
-						.filter("self.name = ?1 "
-								+ "and (self.viewPanel.viewBuilder = ?2 "
-								+ "OR self.viewPanel.viewBuilderSideBar = ?2 "
-								+ "OR self.viewBuilderToolbar = ?2)", event,
-								viewBuilder).fetchOne();
-				if (viewItem != null) {
-					if (viewItem.getTypeSelect() == 0) {
-						viewItem.setOnChange(FormBuilderService
-								.getUpdatedAction(viewItem.getOnChange(),
-										action));
-					} else if (viewItem.getTypeSelect() == 1) {
-						viewItem.setOnChange(FormBuilderService
-								.getUpdatedAction(viewItem.getOnClick(), action));
-					}
-				} else {
-					Long viewId = viewBuilder.getId();
-					if (!eventMap.containsKey(viewId)) {
-						eventMap.put(viewId, new HashMap<String, String>());
-					}
-
-					eventMap.get(viewId).put(event, action);
-				}
-			}
-		}
-	}
-
 	private ViewItem setEvent(ViewBuilder builder, ViewItem viewItem) {
 
 		Long viewId = builder.getId();
@@ -819,7 +705,7 @@ public class DataViewService extends DataCommon {
 		return viewItem;
 	}
 
-	private ViewItem setAttributes(ViewBuilder viewBuilder, ViewItem viewItem) {
+	private ViewItem setCommonAttributes(ViewBuilder viewBuilder, ViewItem viewItem) {
 
 		if (viewItem.getTypeSelect() == 0) {
 			viewItem.setRequired(false);
@@ -827,7 +713,9 @@ public class DataViewService extends DataCommon {
 			if (required != null && required.equalsIgnoreCase("x")) {
 				viewItem.setRequired(true);
 			}
-			viewItem.setRequiredIf(getValue(row, REQUIRED_IF));
+			else {
+				viewItem.setRequiredIf(required);
+			}
 		}
 		
 		viewItem.setHidden(false);
@@ -835,14 +723,18 @@ public class DataViewService extends DataCommon {
 		if (hidden != null && hidden.equalsIgnoreCase("x")) {
 			viewItem.setHidden(true);
 		}
-		viewItem.setHideIf(getValue(row, HIDE_IF));
+		else {
+			viewItem.setHideIf(hidden);
+		}
 		
 		viewItem.setReadonly(false);
 		String readonly = getValue(row, READONLY);
 		if (readonly != null && readonly.equalsIgnoreCase("x")) {
 			viewItem.setReadonly(true);
 		}
-		viewItem.setReadonlyIf(getValue(row, READONLY_IF));
+		else {
+			viewItem.setReadonlyIf(readonly);
+		}
 		
 		viewItem.setShowIf(getValue(row, SHOW_IF));
 		viewItem.setIfModule(getValue(row, IF_MODULE));
@@ -853,7 +745,7 @@ public class DataViewService extends DataCommon {
 			if ("many-to-one,many-to-many".contains(viewItem.getFieldType())) {
 				viewItem.setDomainCondition(getValue(row, DOMAIN));
 			}
-			createAction(viewBuilder, viewItem);
+			addFormula(viewBuilder, viewItem);
 		}
 		
 		String colspan = getValue(row, COLSPAN);
@@ -865,128 +757,6 @@ public class DataViewService extends DataCommon {
 		viewItem.setWidget(getValue(row, WIDGET));
 
 		return viewItem;
-	}
-
-	@Transactional
-	public void createAction(ViewBuilder viewBuilder, ViewItem viewItem) {
-
-		String formula = getValue(row, FORMULA);
-		String event = getValue(row, EVENT);
-		
-		if (formula == null) {
-			return;
-		}
-		
-
-		MetaModel metaModel = viewBuilder.getMetaModel();
-		
-		if (event == null) {
-			return;
-		}
-		
-		String name = "action-" + viewBuilder.getName() + "-set-"
-				+ viewItem.getName();
-
-		ActionBuilder actionBuilder = actionBuilderRepo
-				.all()
-				.filter("self.name = ?1 and self.metaModule.name = ?2", name, viewBuilder.getMetaModule().getName())
-				.fetchOne();
-		if (actionBuilder == null) {
-			actionBuilder = new ActionBuilder(name);
-			actionBuilder.setMetaModule(viewBuilder.getMetaModule());
-		}
-		else{
-			actionBuilder.clearLines();
-		}
-
-		actionBuilder.setTypeSelect(1);
-		actionBuilder.setMetaModel(metaModel);
-
-		String[] exprs = formula.split(",");
-		ActionBuilderLine line = null;
-		for (int i = 0; i < exprs.length; i++) {
-			String expr = exprs[i].trim();
-			if (i % 2 == 0) {
-				line = new ActionBuilderLine();
-				line.setMetaField(viewItem.getMetaField());
-				line.setTargetField(viewItem.getName());
-				if(expr.startsWith("seq(")) {
-					String seqName = createSequence(expr, metaModel, viewItem);
-					if(seqName != null) {
-						line.setValue("com.axelor.studio.service.builder.ActionBuilderService.getSequence('" + seqName + "')"); 
-					}
-				}
-				else if(expr.startsWith("sum(")) {
-					String[] sum = expr.split(":");
-					if (sum.length > 0) {
-						line.setValue(sum[0] + ")");
-						if (sum.length > 1) {
-							line.setFilter(sum[1].substring(0,sum[1].length()-1));
-						}
-					}
-				}
-				else {
-					line.setValue(filterService.getTagValue(expr, false));
-				}
-			} else {
-				line.setConditionText(expr);
-				actionBuilder.addLine(line);
-				line = null;
-			}
-		}
-
-		if (line != null) {
-			actionBuilder.addLine(line);
-		}
-
-		List<ActionBuilderLine> lines = actionBuilder.getLines();
-
-		if (lines != null && !lines.isEmpty()) {
-			if (event.trim().equals("new") && lines.size() == 1
-					&& lines.get(0).getConditionText() == null) {
-				viewItem.setDefaultValue(lines.get(0).getValue());
-			} else {
-				actionBuilderRepo.save(actionBuilder);
-				addEvents(viewBuilder, event, name);
-			}
-		}
-	}
-
-	@Transactional
-	public String createSequence(String formula, MetaModel metaModel,
-			ViewItem viewItem) {
-
-		formula = formula.trim().replace("seq(", "");
-		if (formula.endsWith(")")) {
-			formula = formula.substring(0, formula.length()-1);
-		}
-		String[] sequence = formula.split(":");
-		if (sequence.length > 1) {
-			String model = inflector.dasherize(metaModel.getName()).replace(
-					"-", ".");
-			String field = inflector.dasherize(viewItem.getName()).replace("-",
-					".");
-			
-			String name = "sequence." + model + "." + field;
-			MetaSequence metaSequence = metaSequenceRepo.findByName(name);
-			if(metaSequence == null){
-				metaSequence = new MetaSequence(name);
-			}
-			metaSequence.setMetaModel(metaModel);
-			metaSequence.setPadding(new Integer(sequence[0]));
-			if (sequence.length > 1) {
-				metaSequence.setPrefix(sequence[1]);
-			}
-			if (sequence.length > 2) {
-				metaSequence.setSuffix(sequence[2]);
-			}
-			
-			metaSequence = metaSequenceRepo.save(metaSequence);
-			
-			return "sequence." + model + "." + field;
-		}
-
-		return null;
 	}
 	
 	@Transactional
@@ -1032,7 +802,7 @@ public class DataViewService extends DataCommon {
 			ViewPanel lastPanel = getLastPanel(viewBuilder, true);
 			ViewItem viewItem = new ViewItem();
 			if (basic[4] != null) {
-				setNestedField(lastPanel, basic[4], viewItem);
+				viewItem = setNestedField(lastPanel, basic[4], viewItem);
 			}
 			else {
 				viewItem.setViewPanel(lastPanel);
@@ -1095,7 +865,7 @@ public class DataViewService extends DataCommon {
 		ViewItem viewItem = new ViewItem();
 		viewItem.setTitle(title);
 		viewItem.setMenubarMenu(menubar.get(menubar.size() - 1));
-		viewItem.setOnClick(getValue(row, ON_CLICK));
+		viewItem.setOnClick(getValue(row, ON_CHANGE));
 		
 		viewItemRepo.save(viewItem);
 			
@@ -1104,7 +874,7 @@ public class DataViewService extends DataCommon {
 	private void checkReplace(boolean replace, String module, String view) {
 		
 		if (!replace) {
-			if (extendViews.containsKey(module)) {
+			if (!extendViews.containsKey(module)) {
 				extendViews.put(module, new HashSet<String>());
 			}
 			extendViews.get(module).add(view);
@@ -1117,9 +887,130 @@ public class DataViewService extends DataCommon {
 			this.replace =  replace;
 		}
 		
+	}
+	
+	private void createValidation(String type, ViewBuilder viewBuilder,
+			MetaModel model) {
+		
+		List<String> actionEvents = importFormula.importValidation(row, type, viewBuilder, model);
+		if (actionEvents.size() > 1) {
+			updateEventMap(actionEvents, viewBuilder.getId());
+		}
 		
 	}
 	
+	private void updateEventMap(List<String> actionEvents, Long viewId) {
+		
+		String action = actionEvents.get(0);
+		for (String event : actionEvents) {
+			if (eventMap.containsKey(viewId)) {
+				eventMap.put(viewId, new HashMap<String, String>());
+			}
+			eventMap.put(viewId, addEvents(eventMap.get(viewId), action, event));
+		}
+	}
+
+	private Map<String, String> addEvents(Map<String, String> fieldMap,
+			String action, String event) {
+		
+		if (fieldMap == null) {
+			fieldMap = new HashMap<String, String>();
+		}
+		
+		String oldActions = fieldMap.get(event);
+		
+		if (oldActions != null) {
+			action = FormBuilderService.getUpdatedAction(oldActions, action);
+		}
+		
+		fieldMap.put(event, action);
+		
+		return fieldMap;
+	}
+	
+	private void addFormula(ViewBuilder viewBuilder, ViewItem viewItem) {
+		
+		List<String> actionEvents = importFormula.importFormula(row, viewBuilder, viewItem);
+		if (actionEvents.size() > 1) {
+			updateEventMap(actionEvents, viewBuilder.getId());
+		}
+		
+	}
+	
+	@Transactional
+	public void addDashlet(ViewBuilder viewBuilder, String[] basic) {
+		
+		log.debug("Add dahshlet: {}", basic[2]);
+		if (basic[2] != null) {
+			ViewPanel lastPanel = getLastPanel(viewBuilder, true);
+			ViewItem viewItem = new ViewItem(basic[2]);
+			viewItem.setTypeSelect(4);
+			viewItem.setViewPanel(lastPanel);
+			viewItem.setSequence(getPanelSeq(lastPanel.getId()));
+			log.debug("Dashlet sequence: {}", viewItem.getSequence());
+			String colspan = getValue(row, COLSPAN);
+			if (colspan != null) {
+				viewItem.setColSpan(Integer.parseInt(colspan));
+			}
+			
+			if (basic[1] != null) {
+				addDashletAction(basic, viewBuilder.getMetaModule());
+			}
+			viewItemRepo.save(viewItem);
+		}
+		
+	}
+	
+	private void addDashletAction(String[] basic, MetaModule metaModule) {
+		
+		String viewName = basic[5];
+		if (viewName == null) {
+			viewName = ViewLoaderService.getDefaultViewName(basic[1], "grid");
+		}
+		
+		ViewBuilder targetView = viewBuilderRepo
+				.all()
+				.filter("self.name = ?1 and self.metaModule = ?2"
+						, viewName, metaModule).fetchOne();
+		
+		MetaView view = metaViewRepo.findByName(viewName);
+		
+		ActionBuilder builder = getActionViewBuilder(basic[2], basic[3], viewName, targetView, metaModule, view);
+		builder.setMetaModule(metaModule);
+		String[] domainCtx = getDomainContext(getValue(row, DOMAIN));
+		builder.setDomainCondition(domainCtx[0]);
+		if (domainCtx.length > 1) {
+			builder.setContext(domainCtx[1]);
+		}
+		
+	}
+
+	private String[] getDomainContext(String domain) {
+		
+		if (domain == null) {
+			return new String[]{null};
+		}
+		
+		Matcher macher = DOMAIN_PATTERN.matcher(domain);
+		
+		StringBuffer sb = new StringBuffer(domain.length());
+		List<String> context = new ArrayList<String>();
+		int count = 0;
+		while(macher.find()) {
+			String replacement = ":_param" + count;
+			context.add(replacement.substring(1) + ";eval" + macher.group().replace("= ", ""));
+			macher.appendReplacement(sb, replacement);
+			count++;
+		}
+		
+		macher.appendTail(sb);
+		
+		if (context.isEmpty()) {
+			return new String[]{domain};
+		}
+		
+		return new String[]{sb.toString(), Joiner.on(",").join(context)};
+	}
 	
 
 }

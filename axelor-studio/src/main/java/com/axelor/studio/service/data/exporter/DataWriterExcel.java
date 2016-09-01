@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
+import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.FillPatternType;
 import org.apache.poi.ss.usermodel.IndexedColors;
@@ -23,7 +24,7 @@ import org.slf4j.LoggerFactory;
 
 import com.axelor.meta.MetaFiles;
 import com.axelor.meta.db.MetaFile;
-import com.axelor.studio.service.data.DataCommon;
+import com.axelor.studio.service.data.CommonService;
 
 public class DataWriterExcel implements DataWriter {
 	
@@ -79,8 +80,8 @@ public class DataWriterExcel implements DataWriter {
 		}
 		
 		String type = null;
-		if (values.length == DataCommon.HEADERS.length) {
-			type = values[DataCommon.TYPE];
+		if (values.length == CommonService.HEADERS.length) {
+			type = values[CommonService.TYPE];
 		}
 		setStyle(type, row, index);
 	}
@@ -126,7 +127,7 @@ public class DataWriterExcel implements DataWriter {
 	}
 	
 	private void addStyle() {
-		
+
 		style = workBook.createCellStyle();
 		style.setBorderBottom(CellStyle.BORDER_THIN);
 		style.setBorderTop(CellStyle.BORDER_THIN);
@@ -156,25 +157,36 @@ public class DataWriterExcel implements DataWriter {
 	
 	private void setStyle(String type, XSSFRow row, int index) {
 		
+		XSSFCellStyle applyStyle = null;
 		if (index == 0) {
-			row.setRowStyle(header);
-			return;
+			applyStyle = header;
+		}
+		else if (type == null) {
+			applyStyle = style;
+		}
+		else {
+			switch (type) {
+				case "general":
+					applyStyle = green;
+					break;
+				case "panel":
+					applyStyle = violet;
+					break;
+				case "paneltab":
+					applyStyle = violet;
+					break;
+				case "panelbook":
+					applyStyle = lavender;
+					break;
+				default:
+					applyStyle = style;
+			}
 		}
 		
-		if (type == null) {
-			row.setRowStyle(style);
-			return;
-		}
-		
-		switch (type) {
-			case "general":
-				row.setRowStyle(green);
-				break;
-			case "panel":
-				row.setRowStyle(violet);
-				break;
-			default:
-				row.setRowStyle(style);
+		Iterator<Cell> cellIter = row.cellIterator();
+		while(cellIter.hasNext()) {
+			Cell cell = cellIter.next();
+			cell.setCellStyle(applyStyle);
 		}
 	}
 	
@@ -186,7 +198,7 @@ public class DataWriterExcel implements DataWriter {
 			XSSFSheet sheet = sheets.next();
 			sheet.createFreezePane(0, 1, 0, 1);
 			int count = 0;
-			while (count < DataCommon.HEADERS.length) {
+			while (count < CommonService.HEADERS.length) {
 				sheet.autoSizeColumn(count);
 				count++;
 			}
