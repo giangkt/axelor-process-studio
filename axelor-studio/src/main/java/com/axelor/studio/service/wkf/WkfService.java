@@ -44,7 +44,6 @@ import com.axelor.studio.db.Wkf;
 import com.axelor.studio.db.repo.ViewBuilderRepository;
 import com.axelor.studio.db.repo.ViewItemRepository;
 import com.axelor.studio.db.repo.WkfRepository;
-import com.axelor.studio.service.ConfigurationService;
 import com.google.common.base.Strings;
 import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
@@ -68,8 +67,6 @@ public class WkfService {
 	protected MetaField statusField = null;
 
 	protected String dasherizeModel = null;
-
-	protected String modelName = null;
 
 	protected String moduleName;
 
@@ -107,9 +104,6 @@ public class WkfService {
 	@Inject
 	private WkfRepository wkfRepo;
 
-	@Inject
-	private ConfigurationService configService;
-
 	/**
 	 * Method to process workflow. It call node and transition service for nodes
 	 * and transitions linked with workflow.
@@ -124,10 +118,8 @@ public class WkfService {
 		try {
 			this.workflow = wkf;
 			inflector = Inflector.getInstance();
-			MetaModel metaModel = workflow.getMetaModel();
-			modelName = metaModel.getFullName();
-			moduleName = configService.getModuleName();
-			dasherizeModel = inflector.dasherize(metaModel.getName());
+			moduleName = wkf.getMetaModule().getName();
+			dasherizeModel = inflector.dasherize(workflow.getMetaModel().getName());
 
 			ActionGroup actionGroup = nodeService.process();
 
@@ -473,7 +465,7 @@ public class WkfService {
 
 		if (action == null) {
 			action = new MetaAction(actionName);
-			action.setModel(modelName);
+			action.setModel(workflow.getMetaModel().getFullName());
 			action.setModule(moduleName);
 			action.setType(actionType);
 		}

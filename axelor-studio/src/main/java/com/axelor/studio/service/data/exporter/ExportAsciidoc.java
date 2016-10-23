@@ -38,13 +38,13 @@ import org.slf4j.LoggerFactory;
 import com.axelor.app.AppSettings;
 import com.axelor.meta.MetaFiles;
 import com.axelor.meta.db.MetaFile;
-import com.axelor.studio.service.data.DataCommonService;
+import com.axelor.studio.service.data.CommonService;
 import com.google.common.base.Strings;
 import com.google.inject.Inject;
 
-public class DataAsciidocService extends DataCommonService {
+public class ExportAsciidoc extends CommonService {
 	
-	private static final Logger log = LoggerFactory.getLogger(DataAsciidocService.class);
+	private static final Logger log = LoggerFactory.getLogger(ExportAsciidoc.class);
 	
 	private static final List<String> COMMENT_TYPES = Arrays.asList(
 			new String[]{"tip", "general", "warn"});
@@ -61,6 +61,8 @@ public class DataAsciidocService extends DataCommonService {
 	private String header = null;
 
 	private boolean setHorizontal = false;
+	
+	private String lang = null;
 	
 	private Map<String, Integer> countMap = new HashMap<String, Integer>();
 	
@@ -82,6 +84,7 @@ public class DataAsciidocService extends DataCommonService {
 			return null;
 		}
 		
+		this.lang = lang;
 		File data = MetaFiles.getPath(dataFile).toFile();
 		if (data == null || !data.exists()) {
 			return null;
@@ -237,10 +240,17 @@ public class DataAsciidocService extends DataCommonService {
 		
 		String doc = getValue(row, HELP);
 		if (Strings.isNullOrEmpty(doc)) {
+			doc = getValue(row, HELP_FR);
+		}
+		if (Strings.isNullOrEmpty(doc)) {
 			return;
 		}
 		
 		String title = getValue(row, TITLE);
+		if (lang != null && lang.equals("fr")) {
+			title = getValue(row, TITLE_FR);
+		}
+		
 		if (Strings.isNullOrEmpty(title)) { 
 			title = type;
 		}
@@ -260,7 +270,7 @@ public class DataAsciidocService extends DataCommonService {
 			type = type.substring(0, type.indexOf("("));
 		}
 		
-		if (fieldTypes.containsKey(type) || viewElements.containsKey(type) || header != null) {
+		if (CommonService.FIELD_TYPES.containsKey(type) || CommonService.VIEW_ELEMENTS.containsKey(type) || header != null) {
 			if (header != null) {
 				fw.write(header);
 				header = null;
