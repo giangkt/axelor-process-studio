@@ -3,8 +3,10 @@ package com.axelor.studio.service.data.importer;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.poi.ss.usermodel.Row;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import com.axelor.common.Inflector;
 import com.axelor.meta.db.MetaModel;
 import com.axelor.meta.db.MetaSequence;
 import com.axelor.meta.db.repo.MetaSequenceRepository;
@@ -22,7 +24,9 @@ import com.google.common.base.Strings;
 import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
 
-public class ImportFormula extends CommonService {
+public class FormulaImporter {
+	
+	private final Logger log = LoggerFactory.getLogger(FormulaImporter.class); 
 	
 	@Inject
 	private ActionBuilderRepository actionBuilderRepo;
@@ -37,10 +41,10 @@ public class ImportFormula extends CommonService {
 	private ViewItemRepository viewItemRepo;
 	
 	@Transactional
-	public List<String> importFormula(Row row, ViewBuilder viewBuilder, ViewItem viewItem) {
+	public List<String> importFormula(String[] row, ViewBuilder viewBuilder, ViewItem viewItem) {
 
-		String formula = getValue(row, FORMULA);
-		String event = getValue(row, EVENT);
+		String formula = row[CommonService.FORMULA];
+		String event = row[CommonService.EVENT];
 		
 		if (formula == null || event == null) {
 			return new ArrayList<String>();
@@ -53,6 +57,8 @@ public class ImportFormula extends CommonService {
 		ActionBuilder actionBuilder = getActionBuilder(viewBuilder, name, 1);
 		
 		List<String> formulas = getFormulas(formula);
+		
+		log.debug("Formulas: {}", formulas);
 		
 		ActionBuilderLine line = createActionLine(actionBuilder, formulas, metaModel, viewItem);
 		
@@ -112,11 +118,11 @@ public class ImportFormula extends CommonService {
 
 
 	@Transactional
-	public List<String> importValidation(Row row, String type, ViewBuilder viewBuilder,
+	public List<String> importValidation(String[] row, String type, ViewBuilder viewBuilder,
 			MetaModel model) {
 
-		String formula = getValue(row, FORMULA);
-		String event = getValue(row, EVENT);
+		String formula = row[CommonService.FORMULA];
+		String event = row[CommonService.EVENT];
 
 		if (Strings.isNullOrEmpty(formula) || Strings.isNullOrEmpty(event)) {
 			return new ArrayList<String>();
@@ -191,7 +197,8 @@ public class ImportFormula extends CommonService {
 		return actionBuilder;
 	}
 	
-	private List<String> addEvents(ViewBuilder viewBuilder, String events, String action) {
+	@Transactional
+	public List<String> addEvents(ViewBuilder viewBuilder, String events, String action) {
 		
 		List<String> eventList = new ArrayList<String>();
 		eventList.add(action);
@@ -209,10 +216,11 @@ public class ImportFormula extends CommonService {
 				ViewItem viewItem = viewItemRepo
 						.all()
 						.filter("self.name = ?1 "
-								+ "and (self.viewPanel.viewBuilder = ?2 "
-								+ "OR self.viewPanel.viewBuilderSideBar = ?2 "
-								+ "OR self.viewBuilderToolbar = ?2)", event,
-								viewBuilder).fetchOne();
+								+ "and (self.viewPanel.viewBuilder.id = ?2 "
+								+ "OR self.viewPanel.viewBuilderSideBar.id = ?2 "
+								+ "OR self.viewBuilderToolbar.id = ?2)", event,
+								viewBuilder.getId()).fetchOne();
+				log.debug("View item found: {}", viewItem);
 				if (viewItem != null) {
 					if (viewItem.getTypeSelect() == 0) {
 						viewItem.setOnChange(FormBuilderService
@@ -222,12 +230,14 @@ public class ImportFormula extends CommonService {
 						viewItem.setOnClick(FormBuilderService
 								.getUpdatedAction(viewItem.getOnClick(), action));
 					}
+					viewItemRepo.save(viewItem);
 				} else {
 					eventList.add(event);
 				}
 			}
 		}
 		
+		log.debug("Event List: {}", eventList);
 		return eventList;
 	}
 	
@@ -241,9 +251,9 @@ public class ImportFormula extends CommonService {
 		}
 		String[] sequence = formula.split(":");
 		if (sequence.length > 1) {
-			String model = inflector.dasherize(metaModel.getName()).replace(
+			String model = Inflector.getInstance().dasherize(metaModel.getName()).replace(
 					"-", ".");
-			String field = inflector.dasherize(viewItem.getName()).replace("-",
+			String field = Inflector.getInstance().dasherize(viewItem.getName()).replace("-",
 					".");
 			
 			String name = "sequence." + model + "." + field;

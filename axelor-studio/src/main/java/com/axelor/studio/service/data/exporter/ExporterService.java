@@ -40,16 +40,18 @@ import com.axelor.meta.db.repo.MetaModuleRepository;
 import com.axelor.meta.schema.views.AbstractWidget;
 import com.axelor.studio.service.ViewLoaderService;
 import com.axelor.studio.service.data.CommonService;
+import com.axelor.studio.service.data.TranslationService;
 import com.axelor.studio.service.data.importer.DataReader;
-import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
 import com.google.inject.Inject;
 
-public class ExportService {
+public class ExporterService {
 	
 	private final Logger log = LoggerFactory.getLogger(getClass());
 
 	private String menuPath = null;
+	
+	private String menuPathFR = null;
 	
 	private Map<String, String> processedMenus = new HashMap<String, String>();
 	
@@ -72,16 +74,19 @@ public class ExportService {
 	private MetaFiles metaFiles;
 	
 	@Inject
-	private ExportModel dataExportModel;
+	private ModelExporter modelExporter;
 	
 	@Inject
 	private MetaModuleRepository metaModuleRepo;
 	
 	@Inject
-	private ExportMenu exportMenu;
+	private MenuExporter menuExporter;
 	
 	@Inject
-	private ExportAction exportAction;
+	private ActionExporter actionExporter;
+	
+	@Inject
+	private TranslationService translationService;
 	
 	public MetaFile export(MetaFile oldFile, DataWriter writer, DataReader reader) {
 		
@@ -98,9 +103,9 @@ public class ExportService {
 		
 		addModules(reader);
 
-		exportMenu.export(writer, exportModules);
+		menuExporter.export(writer, exportModules);
 		
-		exportAction.export(writer);
+		actionExporter.export(writer);
 		
 		processMenu();
 		
@@ -152,6 +157,10 @@ public class ExportService {
 		if (keys != null) {
 			for (int count = 0 ; count < reader.getTotalLines(keys[0]); count++) {
 				String[] row = reader.read(keys[0], count);
+				if (row == null) {
+					continue;
+				}
+				
 				writer.write(keys[0], count, row);
 			}
 		}
@@ -169,6 +178,7 @@ public class ExportService {
 		}
 		
 		values[CommonService.MENU] = menuPath;
+		values[CommonService.MENU_FR] = menuPathFR;
 		
 		values = addHelp(null, values);
 		
@@ -180,7 +190,7 @@ public class ExportService {
 	
 	private void processMenu() {
 		
-		List<MetaMenu> menus = 	exportMenu.getMenus(exportModules);
+		List<MetaMenu> menus = 	menuExporter.getMenus(exportModules);
 		
 		for (MetaMenu menu : menus) {
 			String name = menu.getName();
@@ -201,7 +211,7 @@ public class ExportService {
 			
 			MetaAction action = menu.getAction();;
 			if (action != null && action.getType().equals("action-view")) {
-				dataExportModel.export(this, action);
+				modelExporter.export(this, action);
 			}
 			
 			processedMenus.put(name, menu.getTitle());
@@ -257,8 +267,9 @@ public class ExportService {
 		return name;
 	}
 
-	protected void setMenuPath(String menuPath) {
+	protected void setMenuPath(String menuPath, String menuPathFR) {
 		this.menuPath = menuPath;
+		this.menuPathFR = menuPathFR;
 	}
 	
 	private void addGeneralRow(String key, String[] values) {
@@ -271,7 +282,9 @@ public class ExportService {
 		
 		if (menuPath != null) {
 			vals[CommonService.MENU] = menuPath;
+			vals[CommonService.MENU_FR] = menuPathFR;
 			menuPath = null;
+			menuPathFR = null;
 		}	
 		
 		vals = addHelp(null, vals);
@@ -290,7 +303,23 @@ public class ExportService {
 		
 		Collections.reverse(menus);
 		
-		menuPath = Joiner.on("/").join(menus);
+		boolean first = true;
+		for (String mn : menus) {
+			String mnFR = translationService.getTranslation(mn, "fr");
+			if (Strings.isNullOrEmpty(mnFR)) {
+				mnFR = mn;
+			}
+			if (first) {
+				menuPath = mn;
+				menuPathFR = mnFR;
+			}
+			else {
+				menuPath += "/" + mn;
+				menuPathFR += "/" + mnFR;
+			}
+			first = false;
+		}
+		
 	}
 	
 	private void addParentMenus(List<String> menus, MetaMenu metaMenu) {
@@ -322,7 +351,6 @@ public class ExportService {
 			for (int count = 0; count < reader.getTotalLines(key); count ++) {
 				
 				String[] row = reader.read(key, count);
-				
 				if (row == null) {
 					continue;
 				}

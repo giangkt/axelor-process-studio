@@ -1,9 +1,9 @@
 package com.axelor.studio.service.data.importer;
 
-import org.apache.poi.ss.usermodel.Row;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.axelor.common.Inflector;
 import com.axelor.exception.AxelorException;
 import com.axelor.meta.db.MetaField;
 import com.axelor.meta.db.MetaModel;
@@ -15,29 +15,32 @@ import com.google.common.base.Strings;
 import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
 
-public class ImportModel extends CommonService {
+public class ModelImporter {
 	
-	private final static Logger log = LoggerFactory.getLogger(ImportModel.class);
+	private final static Logger log = LoggerFactory.getLogger(ModelImporter.class);
 	
 	@Inject
 	private MetaFieldRepository metaFieldRepo;
 	
 	@Inject
-	private ImportField importField;
+	private FieldImporter fieldImporter;
 	
 	@Inject
 	private MetaModelRepository metaModelRepo;
 	
-	private ImportService importService;
+	@Inject
+	private CommonService commonService;
 	
-	public void importModel(ImportService importService, Row row, MetaModule metaModule) throws AxelorException {
+	private ImporterService importerService;
+	
+	public void importModel(ImporterService importerService, String[] row, int rowNum,  MetaModule metaModule) throws AxelorException {
 		
-		String name = getValue(row, MODEL);
+		String name = row[CommonService.MODEL];
 		if (name == null) {
 			return;
 		}
 		
-		this.importService = importService;
+		this.importerService = importerService;
 		
 		String[] names = name.split("\\(");
 		MetaModel model = getModel(names[0], metaModule);
@@ -46,10 +49,10 @@ public class ImportModel extends CommonService {
 		String parentField = null;
 		if (names.length > 1) {
 			parentField = names[1].replace(")", "");
-			nestedModel = importService.getNestedModels(name);
+			nestedModel = importerService.getNestedModels(name);
 			if (nestedModel == null) {
 				nestedModel = createNestedModel(metaModule, model, parentField);
-				importService.addNestedModel(name, nestedModel);
+				importerService.addNestedModel(name, nestedModel);
 			}
 		}
 
@@ -58,35 +61,38 @@ public class ImportModel extends CommonService {
 		MetaField metaField = null;
 		if (CommonService.FIELD_TYPES.containsKey(basic[0]) && !basic[2].startsWith("$")) {
 			if (nestedModel != null) {
-				metaField = addField(basic, row, nestedModel, metaModule);
+				metaField = addField(basic, row, rowNum, nestedModel, metaModule);
 			}
 			else {
-				metaField = addField(basic, row, model, metaModule);
+				metaField = addField(basic, row, rowNum, model, metaModule);
 			}
 		}
 
 		if (!Strings.isNullOrEmpty(basic[0]) 
 				&& (!CommonService.IGNORE_TYPES.contains(basic[0]) || basic[0].equals("empty"))) {
-			importService.addView(model, basic, row, metaField);
+			importerService.addView(model, basic, row, rowNum, metaField);
 		}
 	}
 	
-	private MetaField addField(String[] basic, Row row, MetaModel model, MetaModule metaModule) throws AxelorException {
+	private MetaField addField(String[] basic, String[] row, int rowNum, MetaModel model, MetaModule metaModule) throws AxelorException {
 		
-		Integer sequence = importService.getFieldSeq(model.getId());
-		MetaField metaField = importField.importField(row, basic, model, metaModule, sequence);
+		Integer sequence = importerService.getFieldSeq(model.getId());
+		MetaField metaField = fieldImporter.importField(row, rowNum, basic, model, metaModule, sequence);
 		if (metaField.getCustomised()) {
-			importService.updateModuleMap(metaModule.getName(), model.getName(), basic[2]);
+			importerService.updateModuleMap(metaModule.getName(), model.getName(), basic[2]);
 		}
 		
-		importService.addGridField(metaModule.getName(), model.getName(), metaField, getValue(row, GRID));
-		
+		String addGrid = row[CommonService.GRID];
+		if (addGrid != null && addGrid.equalsIgnoreCase("x")) {
+			importerService.addGridField(metaModule.getName(), model.getName(), metaField);
+		}
+
 		return metaField;
 	}
 	
-	private String[] getBasic(Row row, String parentField) {
+	private String[] getBasic(String[] row, String parentField) {
 
-		String fieldType = getValue(row, TYPE);
+		String fieldType = row[CommonService.TYPE];
 		String ref = null;
 		String form = null;
 		String grid = null;
@@ -109,9 +115,9 @@ public class ImportModel extends CommonService {
 			fieldType = CommonService.FR_MAP.get(fieldType);
 		}
 
-		String name = getValue(row, NAME);
-		String title = getValue(row, TITLE);
-		String titleFr = getValue(row, TITLE_FR);
+		String name = row[CommonService.NAME];
+		String title = row[CommonService.TITLE];
+		String titleFr = row[CommonService.TITLE_FR];
 		if (Strings.isNullOrEmpty(title)) {
 			title = titleFr;
 		}
@@ -119,7 +125,7 @@ public class ImportModel extends CommonService {
 		if (Strings.isNullOrEmpty(name) 
 				&& !Strings.isNullOrEmpty(title) 
 				&& !fieldType.equals("label")) {
-			name = getFieldName(title);
+			name = commonService.getFieldName(title);
 		}
 
 		return new String[] { fieldType, ref, name, title, parentField, form, grid };
@@ -151,11 +157,11 @@ public class ImportModel extends CommonService {
 	@Transactional(rollbackOn = { Exception.class })
 	public MetaModel getModel(String name, MetaModule module) {
 		
-		name = inflector.camelize(name);
+		name = Inflector.getInstance().camelize(name);
 		
 		MetaModel model = metaModelRepo.findByName(name);
 		
-		importService.updateModuleMap(module.getName(), name, null);
+		importerService.updateModuleMap(module.getName(), name, null);
 		
 		if (model == null) {
 			model = new MetaModel(name);
@@ -164,9 +170,10 @@ public class ImportModel extends CommonService {
 			metaField.setTypeName("String");
 			metaField.setFieldType("string");
 			metaField.setLabel("Status");
+			metaField.setSequence(0);
 			metaField.setCustomised(true);
 			model.addMetaField(metaField);
-			importService.updateModuleMap(module.getName(), name, "wkfStatus");
+			importerService.updateModuleMap(module.getName(), name, "wkfStatus");
 		}
 
 		if (model.getPackageName() == null) {

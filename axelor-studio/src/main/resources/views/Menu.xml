@@ -3,7 +3,7 @@
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://axelor.com/xml/ns/object-views http://axelor.com/xml/ns/object-views/object-views_4.0.xsd">
 
-  <menuitem name="menu-studio-root" title="Studio" order="-70" icon="fa-pencil-square-o" icon-background="purple" groups="admins"/>
+  <menuitem name="menu-studio-root" title="BPM" order="-70" icon="fa-pencil-square-o" icon-background="purple" groups="admins"/>
   
   <!-- Model menus -->
   <menuitem name="menu-studio-model" title="Model" parent="menu-studio-root" order="5"/>
@@ -114,11 +114,18 @@
   <!-- Import/Export menus -->
   <menuitem name="menu-studio-import-export" title="Import/Export" parent="menu-studio-root" order="30"/>
   
-  <menuitem name="menu-import-export" title="Import/Export" parent="menu-studio-import-export" action="menu.import.export" order="5"/>
+  <menuitem name="menu-import-export" title="Module import/export" parent="menu-studio-import-export" action="menu.import.export" order="5"/>
   
-  <action-view name="menu.import.export" title="Import/Export" model="com.axelor.studio.db.DataManager">
+  <action-view name="menu.import.export" title="Module import/export" model="com.axelor.studio.db.DataManager">
     <view type="grid" name="data-manager-grid"/>
     <view type="form" name="data-manager-form"/>
+  </action-view>
+  
+  <menuitem name="menu-record-import-wizard" title="Record import" parent="menu-studio-import-export" action="menu.record.import.wizard" order="10"/>
+  
+  <action-view name="menu.record.import.wizard" title="Record import" model="com.axelor.studio.db.RecordImportWizard">
+    <view type="grid" name="record-import-wizard-grid"/>
+    <view type="form" name="record-import-wizard-form"/>
   </action-view>
   
   <!-- Configuration menus -->
@@ -126,7 +133,7 @@
   
   <menuitem name="menu-studio-module" title="Modules" action="action.studio.module" parent="menu-studio-configuration" order="5"/>
 
-  <action-view name="action.studio.module" title="Modules" model="com.axelor.meta.db.Module">
+  <action-view name="action.studio.module" title="Modules" model="com.axelor.meta.db.MetaModule">
       <view type="grid"/>
       <view type="form"/>
   </action-view>
@@ -145,9 +152,9 @@
       <view type="form" name="field-type-form"/>
   </action-view>
   
-  <menuitem name="menu-studio-template" title="Studio templates" parent="menu-studio-configuration" action="action.module.manager" order="20"/>
+  <menuitem name="menu-studio-template" title="Templates" parent="menu-studio-configuration" action="action.module.manager" order="20"/>
   
-  <action-view name="action.module.manager" title="Studio template" model="com.axelor.studio.db.StudioTemplate">
+  <action-view name="action.module.manager" title="Template" model="com.axelor.studio.db.StudioTemplate">
   	  <view type="grid" name="studio-template-grid"/>
       <view type="form" name="studio-template-form"/>
   </action-view>

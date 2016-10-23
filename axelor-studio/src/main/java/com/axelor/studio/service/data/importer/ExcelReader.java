@@ -3,9 +3,9 @@ package com.axelor.studio.service.data.importer;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.util.Iterator;
 
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.util.NumberToTextConverter;
 import org.apache.poi.xssf.usermodel.XSSFRow;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -14,7 +14,7 @@ import com.axelor.meta.MetaFiles;
 import com.axelor.meta.db.MetaFile;
 import com.google.common.base.Strings;
 
-public class DataReaderExcel implements DataReader {
+public class ExcelReader implements DataReader {
 	
 	private XSSFWorkbook book = null;
 	
@@ -54,26 +54,41 @@ public class DataReaderExcel implements DataReader {
 		}
 		
 		XSSFRow row = sheet.getRow(index);
-		
-		String[] vals = new String[row.getPhysicalNumberOfCells()];
-		
-		Iterator<Cell> rowIter = row.cellIterator();
-		
-		int count = 0;
-		
-		while (rowIter.hasNext()) {
-			Cell cell = rowIter.next();
-			if (cell.getCellType() == Cell.CELL_TYPE_STRING) {
-				String value =  cell.getStringCellValue();
-				if (!Strings.isNullOrEmpty(value)) {
-					vals[count] = value.trim();
-				}
-				else {
-					vals[count] = null;
-				}
-			}
-			count++;
+		if (row == null) {
+			return null;
 		}
+		
+		XSSFRow header = sheet.getRow(0);
+		if (header == null) {
+			return null;
+		}
+		int headerSize = header.getPhysicalNumberOfCells();
+		String[] vals = new String[headerSize];
+		
+		for (int i=0; i<headerSize; i++) {
+			Cell cell = row.getCell(i);
+			if (cell == null) {
+				continue;
+			}
+			switch(cell.getCellType()) {
+				case Cell.CELL_TYPE_STRING:
+					String valString =  cell.getStringCellValue();
+					if (!Strings.isNullOrEmpty(valString)) {
+						vals[i] = valString.trim();
+					}
+					break;
+				case Cell.CELL_TYPE_BOOLEAN:
+					Boolean valBoolean = cell.getBooleanCellValue();
+					if (valBoolean != null) {
+						vals[i] = valBoolean.toString().toLowerCase();
+					}
+					break;
+				case Cell.CELL_TYPE_NUMERIC:
+					vals[i] = NumberToTextConverter.toText(cell.getNumericCellValue());
+					break;
+			}
+		}
+		
 		
 		return vals;
 	}
@@ -97,7 +112,7 @@ public class DataReaderExcel implements DataReader {
 	@Override
 	public int getTotalLines(String key) {
 		
-		if (book == null || key == null) {
+		if (book == null || key == null || book.getSheet(key) == null) {
 			return 0;
 		}
 		

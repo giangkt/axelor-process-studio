@@ -14,7 +14,7 @@ import com.google.common.base.Strings;
 import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
 
-public class ImportGrid {
+public class GridImporter {
 	
 	@Inject
 	private ViewBuilderRepository viewBuilderRepo;
@@ -64,6 +64,19 @@ public class ImportGrid {
 
 	}
 	
+	@Transactional
+	public void clearGrid(String module, String model) {
+    	
+		String gridName = ViewLoaderService.getDefaultViewName(model, "grid");
+		
+		ViewBuilder grid = viewLoaderService.getViewBuilder(module, gridName, "grid");
+		
+		if (grid != null) {
+			viewBuilderRepo.remove(grid);
+		}
+		
+	}
+
 	
 
 }

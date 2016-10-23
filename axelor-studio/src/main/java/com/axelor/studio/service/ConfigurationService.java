@@ -36,7 +36,8 @@ import com.google.common.base.Strings;
 import com.google.inject.Inject;
 
 /**
- * Service provide configuration details support. It check build directory path
+ * Service provide configuration support for studio. 
+ * It will check build directory path
  * and create custom module's directory structure.
  * 
  * @author axelor
@@ -65,6 +66,13 @@ public class ConfigurationService {
 		return getDir(getResourceDir(moduleDir, create), "views");
 	}
 	
+	public File getTranslationDir(String module, boolean create) throws AxelorException {
+		
+		File moduleDir = getModuleDir(module, create);
+		
+		return getDir(getResourceDir(moduleDir, create), "i18n");
+	}
+	
 	/**
 	 * Method to get build directory from property setting.
 	 * 
@@ -72,7 +80,7 @@ public class ConfigurationService {
 	 */
 	private File getBuildDirectory() {
 
-		String buildPath = AppSettings.get().get("build.dir");
+		String buildPath = AppSettings.get().get("studio.source.dir");
 
 		if (buildPath != null) {
 			File buildDir = new File(buildPath);
@@ -291,6 +299,18 @@ public class ConfigurationService {
 		return moduleRepo.all().filter("self.customised = true").fetch();
 	}
 	
+	public List<String> getCustomizedModuleNames() {
+		
+		List<String> modules = new ArrayList<String>();
+		
+		for (MetaModule module : moduleRepo.all().filter("self.customised = true").fetch()) {
+			modules.add(module.getName());
+		}
+		
+		return modules;
+	}
+	
+
 	public MetaModule getCustomizedModule(String name) {
 		
 		MetaModule module = null;

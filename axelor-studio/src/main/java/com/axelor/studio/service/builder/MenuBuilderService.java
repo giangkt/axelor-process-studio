@@ -20,7 +20,6 @@ package com.axelor.studio.service.builder;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -37,15 +36,11 @@ import org.slf4j.LoggerFactory;
 import com.axelor.auth.db.Group;
 import com.axelor.meta.db.MetaAction;
 import com.axelor.meta.db.MetaMenu;
-import com.axelor.meta.db.MetaView;
 import com.axelor.meta.db.repo.MetaActionRepository;
 import com.axelor.meta.db.repo.MetaMenuRepository;
-import com.axelor.meta.db.repo.MetaViewRepository;
 import com.axelor.meta.loader.XMLViews;
 import com.axelor.meta.schema.ObjectViews;
 import com.axelor.meta.schema.actions.Action;
-import com.axelor.meta.schema.actions.ActionView;
-import com.axelor.meta.schema.actions.ActionView.ActionViewBuilder;
 import com.axelor.meta.schema.views.MenuItem;
 import com.axelor.studio.db.MenuBuilder;
 import com.axelor.studio.db.repo.MenuBuilderRepository;
@@ -81,9 +76,8 @@ public class MenuBuilderService {
 	@Inject
 	private MetaActionRepository metaActionRepo;
 	
-	@Inject
-	private MetaViewRepository metaViewRepo;
-
+	private List<MenuBuilder> childMenus;
+	
 	/**
 	 * Root method to access this service. It generate MetaMenu and save
 	 * menuitems in menu.xml
@@ -97,26 +91,30 @@ public class MenuBuilderService {
 	 * @throws IOException
 	 *             Exception throws in saving menu.xml.
 	 */
-	public void build(File parentPath, boolean updateMeta)
+	public void build(String module, File parentPath, boolean updateMeta)
 			throws JAXBException, IOException {
-
-		String query = "self.edited = true";
-
-		if (!updateMeta) {
-			query += " OR self.recorded = false";
-		}
-
-		List<MenuBuilder> menuBuilders = menuBuilderRepo.all().filter(query)
-				.order("-isParent").order("id").fetch();
+		
 		menuItems = new ArrayList<MenuItem>();
 		actionMap = new HashMap<String, Action>();
 		deletedMenus = new ArrayList<String>();
-
+		childMenus = new ArrayList<MenuBuilder>();
+		
+		String query = "self.edited = true";
+		if (!updateMeta) {
+			query += " OR self.recorded = false";
+		}
+		query = "self.metaModule.name = ?1 and (" + query + ")";
+		
+		List<MenuBuilder> menuBuilders = menuBuilderRepo.all()
+				.filter(query, module)
+				.order("order")
+				.fetch();
+		
 		log.debug("Total menus to process: {}", menuBuilders.size());
-
-		generatatMetaMenu(menuBuilders.iterator());
-
+		deleteMetaMenu(menuBuilders.iterator());
 		log.debug("Total menus after process: {}", menuBuilders.size());
+		createMetaMenu(menuBuilders.iterator());
+		updateParent();
 
 		if (!updateMeta || !deletedMenus.isEmpty()) {
 			File menuFile = new File(parentPath, "Menu.xml");
@@ -136,6 +134,29 @@ public class MenuBuilderService {
 
 		updateEdited(menuBuilders, updateMeta);
 
+	}
+
+	private void deleteMetaMenu(Iterator<MenuBuilder> menuIterator) {
+		
+		while(menuIterator.hasNext()) {
+			MenuBuilder menuBuilder = menuIterator.next();
+			if (menuBuilder.getDeleteMenu()) {
+				deleteMenu(menuBuilder);
+				deletedMenus.add(getXmlId(menuBuilder));
+				menuIterator.remove();
+			}
+		}
+		
+	}
+	
+	@Transactional
+	public void updateParent() {
+		
+		for (MenuBuilder menuBuilder : childMenus) {
+			MetaMenu parent = menuBuilder.getMenuBuilder().getMenuGenerated();
+			menuBuilder.getMenuGenerated().setParent(parent);
+			menuBuilderRepo.save(menuBuilder);
+		}
 	}
 
 	/**
@@ -220,32 +241,23 @@ public class MenuBuilderService {
 		menuItem.setTitle(menuBuilder.getTitle());
 		menuItem.setTop(menuBuilder.getTop());
 		menuItem.setXmlId(xmlId);
-		if (menuBuilder.getMetaMenu() != null) {
-			menuItem.setParent(menuBuilder.getMetaMenu().getName());
+		
+		MenuBuilder parentBuilder = menuBuilder.getMenuBuilder();
+		MetaMenu parentMenu = menuBuilder.getMetaMenu();
+		if (parentMenu != null) {
+			menuItem.setParent(parentMenu.getName());
 		}
-		else if (menuBuilder.getMenuBuilder() != null && menuBuilder.getMenuBuilder().getMenuGenerated() != null) {
-			menuItem.setParent(menuBuilder.getMenuBuilder().getMenuGenerated().getName());
+		else if (parentBuilder != null && parentBuilder.getMenuGenerated() != null) {
+			menuItem.setParent(parentBuilder.getMenuGenerated().getName());
 		}
-
-		String icon = menuBuilder.getIcon();
-		if (menuBuilder.getIsParent() && Strings.isNullOrEmpty(icon)) {
-			menuItem.setIcon("fa-list");
-		} else {
-			menuItem.setIcon(icon);
-		}
-
-		String background = menuBuilder.getIconBackground();
-		if (menuBuilder.getIsParent()
-				&& Strings.isNullOrEmpty(background)) {
-			menuItem.setIconBackground("green");
-		} else {
-			menuItem.setIconBackground(menuBuilder.getIconBackground());
+		if (parentBuilder == null && parentMenu == null) {
+			setIconBackgrond(menuBuilder, menuItem);
 		}
 
 		log.debug("Menu name: {}, order: {}", name, menuBuilder.getOrder());
 		menuItem.setOrder(menuBuilder.getOrder());
-		if (!menuBuilder.getIsParent()) {
-			setAction(menuBuilder, menuItem);
+		if (menuBuilder.getActionBuilder() != null) {
+			menuItem.setAction(menuBuilder.getActionBuilder().getName());
 		}
 
 		if (menuBuilder.getGroups() != null
@@ -259,20 +271,23 @@ public class MenuBuilderService {
 
 	}
 
-	/**
-	 * Method set action in menuItem from MenuBuilder and update actionMap.
-	 * 
-	 * @param menuBuilder
-	 *            MenuBuilder source to create action.
-	 * @param menuItem
-	 *            MenuItem to update.
-	 */
-	private void setAction(MenuBuilder menuBuilder, MenuItem menuItem) {
-
-		Action action = getAction(menuBuilder);
-		actionMap.put(action.getName(), action);
-		menuItem.setAction(action.getName());
-
+	private void setIconBackgrond(MenuBuilder menuBuilder, MenuItem menuItem) {
+		
+		String icon = menuBuilder.getIcon();
+		if ( Strings.isNullOrEmpty(icon)) {
+			menuItem.setIcon("fa-list");
+		}
+		else {
+			menuItem.setIcon(icon);
+		}
+		
+		String background = menuBuilder.getIconBackground();
+		if ( Strings.isNullOrEmpty(background)) {
+			menuItem.setIconBackground("green");
+		}
+		else {
+			menuItem.setIconBackground(menuBuilder.getIconBackground());
+		}
 	}
 
 	/**
@@ -298,88 +313,6 @@ public class MenuBuilderService {
 	}
 
 	/**
-	 * Method create ActionView from MenuBuilder.
-	 * 
-	 * @param menuBuilder
-	 *            Source MenuBuilder.
-	 * @return New ActionView created.
-	 */
-	private Action getAction(MenuBuilder menuBuilder) {
-		
-		String name = menuBuilder.getName().replace("-", ".");
-		String xmlId = getXmlId(menuBuilder).replace("-", ".");
-		
-		ActionView action = null;
-		if (menuBuilder.getAction() != null) {
-			action = getRelatedAction(menuBuilder.getAction(), xmlId);
-		}
-		
-		ActionViewBuilder builder = ActionView.define(menuBuilder.getTitle());
-		builder.model(menuBuilder.getMetaModel().getFullName());
-		builder.name(name);
-		builder.domain(menuBuilder.getDomain());
-		
-		String views = menuBuilder.getViews();
-		if (views != null) {
-			builder = setViews(builder, views);
-		}
-		else {
-			if (menuBuilder.getDashboard() != null) {
-				builder.add("dashboard", menuBuilder.getDashboard().getName());
-			} else {
-				builder.add("grid");
-				builder.add("form");
-			}
-		}
-		
-		if (action != null) {
-			builder = setExtra(builder, action);
-		}
-		
-		action = builder.get();
-		action.setXmlId(xmlId);
-		return action;
-
-	}
-	
-	private ActionView getRelatedAction(String name, String xmlId) {
-		
-		MetaAction parentAction = metaActionRepo.all()
-				.filter("self.name = ?1", name).fetchOne();
-		
-		if (parentAction != null 
-				&& parentAction.getType().equals("action-view") 
-				&& !xmlId.equals(parentAction.getXmlId())) {
-			try {
-				ObjectViews views = XMLViews.fromXML(parentAction.getXml());
-				return (ActionView) views.getActions().get(0);
-			} catch (JAXBException e) {
-				e.printStackTrace();
-			}
-		}
-			
-		return null;
-	}
-	
-	private ActionViewBuilder setViews(ActionViewBuilder builder, String views) {
-		
-		for (String view : views.split(",")) {
-			MetaView metaView = metaViewRepo.findByName(view);
-			if (metaView != null) {
-				builder.add(metaView.getType(), view);
-			}
-		}
-		
-		return builder;
-	}
-	
-	private ActionViewBuilder setExtra(ActionViewBuilder builder, ActionView action) {
-		
-		//TODO 
-		return builder;
-	}
-
-	/**
 	 * Create or update MetaMenu from MenuBuilder and save it. Also set action
 	 * in MetaMenu.
 	 * 
@@ -387,7 +320,7 @@ public class MenuBuilderService {
 	 *            MenuBuilder iterator
 	 */
 	@Transactional
-	public void generatatMetaMenu(Iterator<MenuBuilder> menuIterator) {
+	public void createMetaMenu(Iterator<MenuBuilder> menuIterator) {
 
 		if (!menuIterator.hasNext()) {
 			return;
@@ -396,15 +329,6 @@ public class MenuBuilderService {
 		MenuBuilder menuBuilder = menuIterator.next();
 		
 		String xmlId = getXmlId(menuBuilder);
-		
-		if (menuBuilder.getDeleteMenu()) {
-			deleteMenu(menuBuilder);
-			deletedMenus.add(xmlId);
-			menuIterator.remove();
-			generatatMetaMenu(menuIterator);
-			return;
-		}
-
 		String name = menuBuilder.getName();
 
 		log.debug("Processing meta menu : {}", name);
@@ -421,14 +345,14 @@ public class MenuBuilderService {
 		metaMenu.setTitle(menuBuilder.getTitle());
 		metaMenu.setTop(menuBuilder.getTop());
 		String icon = menuBuilder.getIcon();
-		if (menuBuilder.getIsParent() && Strings.isNullOrEmpty(icon)) {
+		if (menuBuilder.getMenuBuilder() == null && menuBuilder.getMetaMenu() == null && Strings.isNullOrEmpty(icon)) {
 			metaMenu.setIcon("fa-list");
 		} else {
 			metaMenu.setIcon(icon);
 		}
 
 		String background = menuBuilder.getIconBackground();
-		if (menuBuilder.getIsParent()
+		if (menuBuilder.getMenuBuilder() == null && menuBuilder.getMetaMenu() == null
 				&& Strings.isNullOrEmpty(background)) {
 			metaMenu.setIconBackground("green");
 		} else {
@@ -444,63 +368,26 @@ public class MenuBuilderService {
 			metaMenu.setGroups(groups);
 		}
 		
-		if (menuBuilder.getMenuBuilder() != null) {
-			metaMenu.setParent(menuBuilder.getMenuBuilder().getMenuGenerated());
-		} else {
-			metaMenu.setParent(menuBuilder.getMetaMenu());
+		MetaMenu parent = menuBuilder.getMetaMenu();
+		if (parent != null) {
+			metaMenu.setParent(parent);
+		}
+		else if (menuBuilder.getMenuBuilder() != null) {
+			childMenus.add(menuBuilder);
 		}
 		
 		MetaAction action = null;
-		if (!menuBuilder.getIsParent() && menuBuilder.getMetaModel() != null) {
-			action = getMetaAction(menuBuilder);
-			menuBuilder.setActionGenerated(action);
+		if (menuBuilder.getActionBuilder() != null) {
+			action = metaActionRepo.findByName(menuBuilder.getActionBuilder().getName());
 		}
 		
 		metaMenu.setAction(action);
 		metaMenu = metaMenuRepo.save(metaMenu);
 
-		generatatMetaMenu(menuIterator);
+		createMetaMenu(menuIterator);
 
 	}
 	
-	/**
-	 * Create or Update MetaAction from menuBuilder record and save it.
-	 * 
-	 * @param menuBuilder
-	 *            Source menuBuilder
-	 * @return New or existing MetaAction
-	 */
-	@Transactional
-	public MetaAction getMetaAction(MenuBuilder menuBuilder) {
-		
-		String actionName = menuBuilder.getAction();
-		
-		if (actionName == null) {
-			actionName = menuBuilder.getName().replace("-", ".");
-		}
-		String xmlId = getXmlId(menuBuilder);
-		xmlId = xmlId.replace("-", ".");
-
-		MetaAction metaAction = metaActionRepo.all()
-				.filter("self.xmlId = ?1", xmlId).fetchOne();
-		
-		if (metaAction == null) {
-			metaAction = new MetaAction(actionName);
-			metaAction.setType("action-view");
-			metaAction.setModule(menuBuilder.getMetaModule().getName());
-			metaAction.setXmlId(xmlId);
-		}
-		
-		metaAction.setModel(menuBuilder.getMetaModel().getFullName());
-
-		Action action = getAction(menuBuilder);
-		String xml = XMLViews.toXml(action, true);
-		metaAction.setXml(xml);
-
-		return metaActionRepo.save(metaAction);
-
-	}
-
 	/**
 	 * Method write menu file. Using menuItems and action Map. It will write xml
 	 * with menuitem and action-views in menuFile.
@@ -514,7 +401,7 @@ public class MenuBuilderService {
 	 */
 	private void writeMenu(File menuFile) throws IOException, JAXBException {
 
-		StringWriter xmlWriter = new StringWriter();
+		FileWriter fileWriter = new FileWriter(menuFile);
 
 		ObjectViews objectViews = new ObjectViews();
 
@@ -524,10 +411,8 @@ public class MenuBuilderService {
 		actions.addAll(actionMap.values());
 		objectViews.setActions(actions);
 
-		XMLViews.marshal(objectViews, xmlWriter);
-
-		FileWriter fileWriter = new FileWriter(menuFile);
-		fileWriter.write(xmlWriter.toString());
+		XMLViews.marshal(objectViews, fileWriter);
+		
 		fileWriter.close();
 	}
 
@@ -544,11 +429,6 @@ public class MenuBuilderService {
 
 		if (menuBuilder == null) {
 			return;
-		}
-
-		MetaAction action = menuBuilder.getActionGenerated();
-		if (action != null) {
-			metaActionRepo.remove(action);
 		}
 
 		menuBuilderRepo.remove(menuBuilder);

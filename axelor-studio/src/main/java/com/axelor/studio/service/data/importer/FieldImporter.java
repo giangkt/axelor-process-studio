@@ -2,8 +2,7 @@ package com.axelor.studio.service.data.importer;
 
 import java.math.BigDecimal;
 
-import org.apache.poi.ss.usermodel.Row;
-
+import com.axelor.common.Inflector;
 import com.axelor.exception.AxelorException;
 import com.axelor.i18n.I18n;
 import com.axelor.meta.db.MetaField;
@@ -21,7 +20,7 @@ import com.google.common.base.Strings;
 import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
 
-public class ImportField extends CommonService {
+public class FieldImporter {
 	
 	@Inject
 	private MetaFieldRepository metaFieldRepo;
@@ -36,7 +35,7 @@ public class ImportField extends CommonService {
 	private MetaSelectRepository metaSelectRepo;
 
 	@Transactional
-	public MetaField importField(Row row, String[] basic, MetaModel metaModel, 
+	public MetaField importField(String[] row, int rowNum, String[] basic, MetaModel metaModel, 
 			MetaModule metaModule, Integer sequence) throws AxelorException {
 
 		String model = metaModel.getName();
@@ -48,7 +47,7 @@ public class ImportField extends CommonService {
 		
 		
 		if (field == null) {
-			validateFieldName(basic[2], row.getRowNum(), model);
+			validateFieldName(basic[2], rowNum, model);
 			field = new MetaField();
 			field.setName(basic[2]);
 			if (!ModelBuilderService.isReserved(basic[2])) {
@@ -58,7 +57,7 @@ public class ImportField extends CommonService {
 			return field;
 		}
 		
-		translationService.addTranslation(basic[3], getValue(row, TITLE_FR), "fr");
+		translationService.addTranslation(basic[3], row[CommonService.TITLE_FR], "fr", metaModule.getName());
 		
 		if (CommonService.FIELD_TYPES.containsKey(basic[1])) {
 			field.setFieldType(CommonService.FIELD_TYPES.get(basic[1]));
@@ -83,22 +82,22 @@ public class ImportField extends CommonService {
 				field.setIsDuration(true);
 				break;
 			case "select":
-				field = setSelectionField(row, model, field, metaModule);
+				field = setSelectionField(row, rowNum, model, field, metaModule);
 				break;
 			case "multiselect":
-				field = setSelectionField(row, model, field, metaModule);
+				field = setSelectionField(row, rowNum, model, field, metaModule);
 				field.setMultiselect(true);
 				break;
 
 		}
 		
-		String help = getValue(row, HELP);
-		String helpFr = getValue(row, HELP_FR);
+		String help = row[CommonService.HELP];
+		String helpFr = row[CommonService.HELP_FR];
 		if (help == null) {
 			help = helpFr;
 		}
 		else {
-			translationService.addTranslation(help, helpFr, "fr");
+			translationService.addTranslation(help, helpFr, "fr", metaModule.getName());
 		}
 		
 		field.setHelpText(help);
@@ -108,7 +107,7 @@ public class ImportField extends CommonService {
 		
 		field = updateFieldTypeName(basic[0], basic[1], field, metaModule.getName());
 		
-		field = processFormula(field, getValue(row, FORMULA));
+		field = processFormula(field, row[CommonService.FORMULA]);
 		
 
 		return metaFieldRepo.save(field);
@@ -188,9 +187,9 @@ public class ImportField extends CommonService {
 	 * @return Updated MetaField.
 	 * @throws AxelorException 
 	 */
-	private MetaField setSelectionField(Row row, String modelName, MetaField field, MetaModule module) throws AxelorException {
+	private MetaField setSelectionField(String[] row, int rowNum, String modelName, MetaField field, MetaModule module) throws AxelorException {
 
-		String[] selection = getSelection(row, modelName, field.getName());
+		String[] selection = getSelection(row, rowNum, modelName, field.getName());
 		
 		MetaSelect metaSelect = metaSelectRepo.findByName(selection[0]);
 		
@@ -198,15 +197,14 @@ public class ImportField extends CommonService {
 
 			if(metaSelect == null) {
 				metaSelect = new MetaSelect(selection[0]);
-				metaSelect.setCustomised(true);
-				metaSelect.setMetaModule(module);
+				metaSelect.setModule(module.getName());
 			}
 			else{
 				metaSelect.clearItems();
 			}
 	
 			String[] option = selection[1].split(",");
-			String selectFr = getValue(row, SELECT_FR);
+			String selectFr = row[CommonService.SELECT_FR];
 			String[] optionFr = null;
 			if (selectFr != null) {
 				optionFr = selectFr.split(",");
@@ -227,7 +225,7 @@ public class ImportField extends CommonService {
 						if (titleFR != null && titleFR.contains(":")) {
 							String[] valuesFr = titleFR.split(":");
 							if (valuesFr.length > 1){
-								translationService.addTranslation(values[1].trim(), valuesFr[1].trim(), "fr" );
+								translationService.addTranslation(values[1].trim(), valuesFr[1].trim(), "fr", module.getName());
 							}
 						}
 					}
@@ -237,7 +235,7 @@ public class ImportField extends CommonService {
 					metaSelectItem.setValue(val.toString());
 					metaSelectItem.setTitle(title.trim());
 					if (titleFR != null) {
-						translationService.addTranslation(title.trim(), titleFR, "fr" );
+						translationService.addTranslation(title.trim(), titleFR, "fr",  module.getName());
 					}
 				}
 				metaSelectItem.setOrder(count);
@@ -253,17 +251,17 @@ public class ImportField extends CommonService {
 		return field;
 	}
 	
-	private String[] getSelection(Row row, String modelName, String fieldName) throws AxelorException {
+	private String[] getSelection(String[] row, int rowNum, String modelName, String fieldName) throws AxelorException {
 		
-		String selection = getValue(row, SELECT);
+		String selection = row[CommonService.SELECT];
 		if (selection == null) {
-			selection = getValue(row, SELECT_FR);
+			selection = row[CommonService.SELECT_FR];
 		}
 
 		if (Strings.isNullOrEmpty(selection)) {
 			throw new AxelorException(I18n
 					.get("Blank selection for object: %s, row: %s"), 1,
-					modelName, row.getRowNum() + 1);
+					modelName, rowNum + 1);
 		}
 		selection = selection.trim();
 		
@@ -283,8 +281,8 @@ public class ImportField extends CommonService {
 		}
 		
 		if (name == null) {
-			name = inflector.dasherize(modelName) + "-"
-					+ inflector.dasherize(fieldName) + "-select";
+			name = Inflector.getInstance().dasherize(modelName) + "-"
+					+ Inflector.getInstance().dasherize(fieldName) + "-select";
 			name = name.replace("-", ".");
 		}
 		
@@ -320,7 +318,7 @@ public class ImportField extends CommonService {
 											.getName());
 				}
 				refModel = refModel.trim();
-				refModel = inflector.camelize(refModel);
+				refModel = Inflector.getInstance().camelize(refModel);
 			}
 			field.setTypeName(refModel);
 			field.setRelationship(CommonService.RELATIONAL_TYPES.get(fieldType));
